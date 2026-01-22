@@ -1,16 +1,16 @@
 #include "syntaxer.h"
 
 static int syntaxer_sort_cmp(const void* x, const void* y) {
-    size_t lx = wcslen(((syntaxer_neutralizer*)x)->begin);
-    size_t ly = wcslen(((syntaxer_neutralizer*)y)->begin);
+    size_t lx = strlenw(((syntaxer_neutralizer*)x)->begin);
+    size_t ly = strlenw(((syntaxer_neutralizer*)y)->begin);
 
     return lx > ly ? 1 : lx < ly ? -1 : 0;
 }
 
-size_t syntaxer_select_until(syntaxer_neutralizer* neutralizers, size_t neutralizers_count, const wchar_t* s, wchar_t* begin_sequence, wchar_t* end_sequence, size_t max_len) {
-    size_t begin_sequence_len = wcslen(begin_sequence);
-    size_t end_sequence_len = wcslen(end_sequence);
-    wchar_t c;
+size_t syntaxer_select_until(syntaxer_neutralizer* neutralizers, size_t neutralizers_count, const charw* s, charw* begin_sequence, charw* end_sequence, size_t max_len) {
+    size_t begin_sequence_len = strlenw(begin_sequence);
+    size_t end_sequence_len = strlenw(end_sequence);
+    charw c;
     size_t i;
     size_t neutral = 0;
     flag_t f = 0;
@@ -27,18 +27,18 @@ size_t syntaxer_select_until(syntaxer_neutralizer* neutralizers, size_t neutrali
             break;
         }
 
-        n_begin_lens[i] = wcslen(neutralizers->begin);
-        n_end_lens[i] = wcslen(neutralizers->end);
-        n_esc_char_lens[i] = wcslen(neutralizers->esc_char);
-        n_esc_raw_lens[i] = wcslen(neutralizers->esc_raw);
+        n_begin_lens[i] = strlenw(neutralizers->begin);
+        n_end_lens[i] = strlenw(neutralizers->end);
+        n_esc_char_lens[i] = strlenw(neutralizers->esc_char);
+        n_esc_raw_lens[i] = strlenw(neutralizers->esc_raw);
     }
     for (i = 0; (c = s[i]) != L'\0' && i < max_len; i++) {
         //printf("(%zu; %zu; '%lc')\n", i, neutral, c);
         if (!neutral) {
-            if (!wcsncmp(begin_sequence, s + i, begin_sequence_len)) {
+            if (!strncmpw(begin_sequence, s + i, begin_sequence_len)) {
                 nest++;
                 i += begin_sequence_len - 1;
-            } else if (!wcsncmp(end_sequence, s + i, end_sequence_len)) {
+            } else if (!strncmpw(end_sequence, s + i, end_sequence_len)) {
                 if (nest > 0) {
                     nest--;
                     i += end_sequence_len - 1;
@@ -47,7 +47,7 @@ size_t syntaxer_select_until(syntaxer_neutralizer* neutralizers, size_t neutrali
                     return i;
                 }
             } else for (size_t j = 0; j < neutralizers_count; j++) {
-                if (!wcsncmp(neutralizers[j].begin, s + i, n_begin_lens[j])) {
+                if (!strncmpw(neutralizers[j].begin, s + i, n_begin_lens[j])) {
                     i += n_begin_lens[j] - 1;
                     neutral = j + 1;
                     //break;
@@ -60,12 +60,12 @@ size_t syntaxer_select_until(syntaxer_neutralizer* neutralizers, size_t neutrali
             size_t old_n = neutral;
             if (flag_excludes(f, SYNTXF_EXE_ESC_CHAR)) {
                 // if escape char is disabled
-                if (neutralizers[neutral - 1].end != NULL && !wcsncmp(neutralizers[neutral - 1].end, s + i, n_end_lens[neutral - 1])) {
+                if (neutralizers[neutral - 1].end != NULL && !strncmpw(neutralizers[neutral - 1].end, s + i, n_end_lens[neutral - 1])) {
                     // ending string or comment
                     i += n_end_lens[neutral - 1] - 1;
                     neutral = 0;
                     continue;//break;
-                } else if (neutralizers[neutral - 1].esc_char != NULL && !wcsncmp(neutralizers[neutral - 1].esc_char, s + i, n_esc_char_lens[neutral - 1])) {
+                } else if (neutralizers[neutral - 1].esc_char != NULL && !strncmpw(neutralizers[neutral - 1].esc_char, s + i, n_esc_char_lens[neutral - 1])) {
                     // escape char placed \ <--
                     f |= SYNTXF_EXE_ESC_CHAR;
                     i += n_esc_char_lens[neutral - 1] - 1;
@@ -77,11 +77,11 @@ size_t syntaxer_select_until(syntaxer_neutralizer* neutralizers, size_t neutrali
                 } else if (c == L'\n' && flag_excludes(neutralizers[neutral - 1].flags, SYNTXF_DEF_N_ML)) {
                     // if the escape raw char is disabled and the block is not multiline
                     neutral = 0;
-                } else if (neutralizers[neutral - 1].esc_raw != NULL && !wcsncmp(neutralizers[old_n - 1].esc_raw, s + old_i, n_esc_raw_lens[old_n - 1])) {
+                } else if (neutralizers[neutral - 1].esc_raw != NULL && !strncmpw(neutralizers[old_n - 1].esc_raw, s + old_i, n_esc_raw_lens[old_n - 1])) {
                     // if the raw escape char is placed => enable flag
                     f |= SYNTXF_EXE_ESC_CHAR;
                     i += n_esc_char_lens[old_n - 1] - 1;
-                }// else if (flag_includes(f, SYNTXF_DEF_NB_ESC_IMMUNE) && !wcsncmp(neutralizers[neutral - 1]., ,))
+                }// else if (flag_includes(f, SYNTXF_DEF_NB_ESC_IMMUNE) && !strncmpw(neutralizers[neutral - 1]., ,))
             } else {
                 // if escape char is enabled
                 if (flag_includes(f, SYNTXF_EXE_ESC_RAW)) {

@@ -19,7 +19,7 @@ u_map *map_new()
 u_map_node *mapn_new(const mapt_t *token, void *data)
 {
 	u_map_node *n = (u_map_node *)malloc(sizeof(u_map_node));
-	n->token = wcsdup(token);
+	n->token = strdupw(token);
 	n->data = data;
 	n->next = NULL;
 
@@ -29,7 +29,7 @@ u_map_node *mapn_new(const mapt_t *token, void *data)
 u_map_node *mapn_find(u_map_node *begin, const mapt_t *token)
 {
 	if(begin == NULL) return NULL; //7/14/2024
-	if(wcscmp(token, begin->token))
+	if(strcmpw(token, begin->token))
 	{
 		if(begin->next == NULL)
 			return NULL;
@@ -41,7 +41,7 @@ u_map_node *mapn_find(u_map_node *begin, const mapt_t *token)
 
 u_map_node_counted mapn_find_counted(u_map_node* begin, const mapt_t* token, size_t count) {
 	if (begin == NULL) return (u_map_node_counted) { NULL, count, 0 }; //7/16/2025
-	if (wcscmp(token, begin->token)) {
+	if (strcmpw(token, begin->token)) {
 		if (begin->next == NULL)
 			return (u_map_node_counted) { NULL, count, 0 };
 		else

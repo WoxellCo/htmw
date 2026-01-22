@@ -1,5 +1,5 @@
 /**
- * (c) HTMW vT.5 by Woxell.co
+ * (c) HTMW vT.6 by Woxell.co
  * 
  * [WARNING]
  * The current version is a test version, it's unstable and there are known memory leaks and unhandled errors.
@@ -10,6 +10,7 @@
 #include <wchar.h>
 
 #include <locale.h>
+#include <errno.h>
 
 #include "lua.h"
 #include "lualib.h"
@@ -23,10 +24,7 @@
 
 #include "str.h"
 #include "jsw.h"
-
-#ifdef _WIN32
-#pragma comment(lib, "lua54.lib")
-#endif // _WIN32
+#include "netio.h"
 
 #define DEBUG_MODE 0
 
@@ -51,39 +49,21 @@
     #include <mach-o/dyld.h>
 #endif
 
-char* get_executable_dir() {
-    static char buffer[2048];
+
+
 
 #if defined(_WIN32)
-    DWORD len = GetModuleFileNameA(NULL, buffer, sizeof(buffer));
-    if (len == 0 || len == sizeof(buffer)) return NULL;
-    // Strip filename
-    for (int i = len - 1; i >= 0; i--) {
-        if (buffer[i] == '\\') {
-            buffer[i + 1] = '\0';
-            break;
-        }
-    }
-#elif defined(__linux__)
-    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
-    if (len == -1) return NULL;
-    buffer[len] = '\0';
-    char* last_slash = strrchr(buffer, '/');
-    if (last_slash) *(last_slash + 1) = '\0';
-#elif defined(__APPLE__)
-    uint32_t size = sizeof(buffer);
-    if (_NSGetExecutablePath(buffer, &size) != 0) return NULL;
-    char real_path[2048];
-    if (!realpath(buffer, real_path)) return NULL;
-    strcpy(buffer, real_path);
-    char* last_slash = strrchr(buffer, '/');
-    if (last_slash) *(last_slash + 1) = '\0';
+    //#define GLOBAL_INCLUDE_PATH_LEN 17
+    #define GLOBAL_INCLUDE_PATH "C:\\htmw\\0.6\\include"
+#elif defined(__unix__)
+    //#define GLOBAL_INCLUDE_PATH_LEN 31
+    #define GLOBAL_INCLUDE_PATH "/usr/local/lib/htmw/0.6"
 #else
     #error "Unsupported platform"
 #endif
 
-    return buffer;
-}
+
+
 
 #define T_ARG_NULLABLE      (1 << 0)
 #define T_ARG_DOUBLEASS     (1 << 1)
@@ -111,7 +91,7 @@ typedef struct {
 typedef struct {
     size_t shifts_count;                        // total number of shifts (field "tpyes" - 1, $INNER is excluded)
     size_t fields_count;                        // total number of fields on the gorund
-    wchar_t* field_names;                       // 1 block of array of wide characters, where each field name is listed
+    charw* field_names;                       // 1 block of array of wide characters, where each field name is listed
     size_t* field_shifts;                       // contains indices of each field name string except the first one
     field_location* fields;                     // contains the info where each field is located on the ground (pos) and which placeholder (idx)
     string ground;                              // inner with invisible placeholders
@@ -131,8 +111,11 @@ typedef union {
 } ht_any;
 
 #define CTX_HEAD    (1 << 0)
+#define CTX_NETWORK (1 << 1)
+#define CTX_UNSAFE  (1 << 2)
 
 typedef struct {
+    list* global_paths;                         // list of strings (include paths)
     u_map* includes;                            // map of strings (path, content) global includes are prefixed with `>`
     u_map* templates;                           // (name, ht_template)
     string input;
@@ -150,14 +133,14 @@ typedef struct {
     size_t* inner_shifts;
     size_t args_count;                          // 
     size_t* arg_shifts;                         // contains the indices of the arguments, starting from the 2nd argument, the last value is the address of the byte overflow (after the null terminator)
-    wchar_t* args;                              // contains strings of value passed in order for the constructor
-    wchar_t* inners;                            // contains strings of the inner for each widget
+    charw* args;                              // contains strings of value passed in order for the constructor
+    charw* inners;                            // contains strings of the inner for each widget
     field_location* fields;                     // contains the info where each field is located on the ground (pos) and which placeholder (idx)
     string ground;                              // content with invisible placeholders
 } txt_template_fill_data;
 
 ht_template_core* htmw_process_template_inner(ht_template t);
-htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx);
+htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx, list *global_paths, int enable_network);
 txt_template_fill_data htmw_process_txt(htmw_context ctx);
 string htmw_compile_txt(htmw_context ctx, txt_template_fill_data* tf);
 
@@ -195,19 +178,27 @@ string read_file(const char* path, int exe_location) {
     FILE* f = fopen(path, "r");
 
     if (f == NULL) {
-        throw_error("Couldn't open input file(s)", E_EXIT);
+        size_t msg_len = 33 + strlen(path);
+        char *msg = (char *)malloc(msg_len * sizeof(char));
+        snprintf(msg, msg_len, "Couldn't open input file(s): \"%s\"", path);
+        throw_error(msg, E_EXIT);
     }
 
-    wchar_t* buffer = (wchar_t*)malloc(MAX_LEN_LN * sizeof(wchar_t));
+    charw* buffer = (charw*)malloc(MAX_LEN_LN * sizeof(charw));
+#if WCHAR_MODE
     while (fgetws(buffer, MAX_LEN_LN, f)) {
         str_append(&s, buffer, MAX_LEN_LN);
     }
+#else
+    while (fgets(buffer, MAX_LEN_LN, f))
+        str_append(&s, buffer, MAX_LEN_LN);
+#endif
 
     fclose(f);
     return s;
 }
 
-FILE* fopen_g(const char* filename, const char* mode) {
+/*FILE* fopen_g(const char* filename, const char* mode) {
     char* base_dir = get_executable_dir();
     if (!base_dir) {
         throw_error("Could not determine executable directory\n", E_EXIT);
@@ -218,7 +209,7 @@ FILE* fopen_g(const char* filename, const char* mode) {
     snprintf(full_path, sizeof(full_path), "%s%s", base_dir, filename);
 
     return fopen(full_path, mode);
-}
+}*/
 
 // creates a list of arguments in a given template and a given piece of a string (insde the parenthesis), `n` is the max allocation size
 void parse_template_args(ht_template* t, string in, size_t n) {
@@ -232,10 +223,10 @@ void parse_template_args(ht_template* t, string in, size_t n) {
 #endif
 
     size_t count = 0;
-    wchar_t c;
+    charw c;
     int arg_phase = 0;
     size_t last_arg_begin_idx = 0;
-    wchar_t delim = L'\0';
+    charw delim = charl('\0');
     size_t last_default_begin_idx = 0;
     for (size_t i = 0; i < in.length; i++) {
         c = in.c_str[i];
@@ -243,9 +234,9 @@ void parse_template_args(ht_template* t, string in, size_t n) {
         switch (arg_phase) {
         case 0:
             args_default[count] = nullstr;
-            if (c == L' ' || c == L'\t' || c == L'\n' || c == L'\r') {
+            if (c == charl(' ') || c == charl('\t') || c == charl('\n') || c == charl('\r')) {
                 continue;
-            } else if (c >= L'a' && c <= L'z' || c >= L'A' && c <= L'Z' || c >= L'0' && c <= L'9' || c == L'_') {
+            } else if (c >= charl('a') && c <= charl('z') || c >= charl('A') && c <= charl('Z') || c >= charl('0') && c <= charl('9') || c == charl('_')) {
                 last_arg_begin_idx = i;
                 args_split[count].c_str = in.c_str + i;
                 arg_phase = 1;
@@ -258,17 +249,17 @@ void parse_template_args(ht_template* t, string in, size_t n) {
             }
             break;
         case 1:
-            if (c == L' ' || c == L'\t' || c == L'\n' || c == L'\r') {
+            if (c == charl(' ') || c == charl('\t') || c == charl('\n') || c == charl('\r')) {
                 arg_phase = 2;
                 args_split[count].length = i - last_arg_begin_idx;
-            } else if (c == L'?') {
+            } else if (c == charl('?')) {
                 arg_phase = 2;
                 args_split[count].length = i - last_arg_begin_idx;
                 args_flag[count] |= T_ARG_NULLABLE;
-            } else if (c == L'=') {
+            } else if (c == charl('=')) {
                 arg_phase = 3;
                 args_split[count].length = i - last_arg_begin_idx;
-            } else if (c == L',') {
+            } else if (c == charl(',')) {
                 arg_phase = 0;
                 args_split[count++].length = i - last_arg_begin_idx;
             } else if (i == in.length - 1) {
@@ -279,15 +270,15 @@ void parse_template_args(ht_template* t, string in, size_t n) {
             }
             break;
         case 2:
-            if (c == L' ' || c == L'\t' || c == L'\n' || c == L'\r') {
+            if (c == charl(' ') || c == charl('\t') || c == charl('\n') || c == charl('\r')) {
 
-            } else if (c == L',' || i == in.length - 1) {
+            } else if (c == charl(',') || i == in.length - 1) {
                 count++;
                 arg_phase = 0;
-            } else if (c == L'=') { // default arg
+            } else if (c == charl('=')) { // default arg
                 // for now throw exception, it will be implemented in the future
                 arg_phase = 3;
-            } else if (c == L'?') {
+            } else if (c == charl('?')) {
                 args_flag[count] |= T_ARG_NULLABLE;
             } else {
                 // TODO: throw excpetion
@@ -296,44 +287,44 @@ void parse_template_args(ht_template* t, string in, size_t n) {
         case 3:
             //puts("-----3-----");
             // what now :3
-            if (c == L' ' || c == L'\t' || c == L'\n' || c == L'\r') {
+            if (c == charl(' ') || c == charl('\t') || c == charl('\n') || c == charl('\r')) {
 
-            } else if (c == L'"') {
+            } else if (c == charl('"')) {
                 args_default[count].c_str = in.c_str + i + 1;
                 last_default_begin_idx = i + 1;
-                delim = L'"';
+                delim = charl('"');
                 arg_phase = 4;
-            } else if (c == L'\'') {
+            } else if (c == charl('\'')) {
                 args_default[count].c_str = in.c_str + i + 1;
                 last_default_begin_idx = i + 1;
-                delim = L'\'';
+                delim = charl('\'');
                 arg_phase = 4;
-            } else if (c == L',') {
+            } else if (c == charl(',')) {
                 // TODO: handle exception
                 throw_error("Argument with default values must have a value", E_EXIT);
             } else {
                 args_default[count].c_str = in.c_str + i;
                 last_default_begin_idx = i;
-                delim = L'\0';
+                delim = charl('\0');
                 arg_phase = 4;
             }
             break;
         case 4:
             // case4
             //if (count == 2) puts("3->4");
-            if ((c == L' ' || c == L'\t' || c == L'\n' || c == L'\r') && delim == L'\0') {
+            if ((c == charl(' ') || c == charl('\t') || c == charl('\n') || c == charl('\r')) && delim == charl('\0')) {
                 args_default[count++].length = i - last_default_begin_idx;
                 arg_phase = 5;
-            } else if (c == L'"' && delim == L'"') {
+            } else if (c == charl('"') && delim == charl('"')) {
                 args_default[count++].length = i - last_default_begin_idx;
                 arg_phase = 5;
-            } else if (c == L'\'' && delim == L'\'') {
+            } else if (c == charl('\'') && delim == charl('\'')) {
                 args_default[count++].length = i - last_default_begin_idx;
                 arg_phase = 5;
-            } else if (c == L',' && delim == L'\0') {
+            } else if (c == charl(',') && delim == charl('\0')) {
                 args_default[count++].length = i - last_default_begin_idx;
                 arg_phase = 0;
-            } else if (i == in.length - 1 && delim == L'\0') {
+            } else if (i == in.length - 1 && delim == charl('\0')) {
                 args_default[count++].length = i - last_default_begin_idx + 1;
                 arg_phase = 0;
             } else {
@@ -341,12 +332,13 @@ void parse_template_args(ht_template* t, string in, size_t n) {
             }
             break;
         case 5:
-            if (c == L' ' || c == L'\t' || c == L'\n' || c == L'\r') {
+            if (c == charl(' ') || c == charl('\t') || c == charl('\n') || c == charl('\r')) {
 
-            } else if (c == L',' || i == in.length - 1) {
+            } else if (c == charl(',') || i == in.length - 1) {
                 arg_phase = 0;
             } else {
                 // TODO: throw excpetion
+                throw_error("Unexpected character", E_EXIT);
             }
             break;
         }
@@ -387,14 +379,14 @@ char* generate_lua_template_constructor(const string name, const string impl, co
     size_t* args_length = (size_t*)malloc(args->size * sizeof(size_t));
 
     char* name_c_str = (char*)malloc((name.length + 1) * sizeof(char));
-    wcstombs(name_c_str, name.c_str, name.length);
+    wcstombsw(name_c_str, name.c_str, name.length);
     name_c_str[name.length] = '\0';
 
     size_t total_args_len = 0;
     VECT_FOR(args, i) {
         ht_template_arg e = VECT_A(ht_template_arg, args)[i];
         args_c_str[i] = (char*)malloc((e.name.length + 1) * sizeof(char));
-        wcstombs(args_c_str[i], e.name.c_str, e.name.length);
+        wcstombsw(args_c_str[i], e.name.c_str, e.name.length);
         args_c_str[i][e.name.length] = '\0';
         args_length[i] = e.name.length;
         total_args_len += e.name.length;
@@ -440,7 +432,7 @@ char* generate_lua_template_constructor(const string name, const string impl, co
     strncpy(lua_ret_block, "\nreturn {", 10);
 
     //char* var_names_mb = (char*)malloc((core->field_shifts[core->shifts_count - 1] - core->field_shifts[0]) * sizeof(char));
-    //wcstombs(var_names_mb, core->field_names + core->field_shifts[0], core->field_shifts[core->shifts_count] - core->field_shifts[0] - 1);
+    //wcstombsw(var_names_mb, core->field_names + core->field_shifts[0], core->field_shifts[core->shifts_count] - core->field_shifts[0] - 1);
     /*i < core->field_shifts[core->shifts_count] - core->field_shifts[0] - 1*/
 
     for (size_t i = 0; i < core->shifts_count; i++) {
@@ -448,7 +440,7 @@ char* generate_lua_template_constructor(const string name, const string impl, co
         size_t size = core->field_shifts[i] - (i ? core->field_shifts[i - 1] : 6);
         size_t shift = i ? core->field_shifts[i - 1] : 6;
         char* var_name = (char*)malloc(size * sizeof(char));
-        wcstombs(var_name, core->field_names + shift, size);
+        wcstombsw(var_name, core->field_names + shift, size);
         var_name[size - 1] = '\0';
         //printf("|(size: %zu, shift: %zu)__%s__", size, shift, var_name);
 
@@ -486,7 +478,7 @@ char* generate_lua_template_constructor(const string name, const string impl, co
     //printf("(sz: %zu)____%s____\n", lua_ret_block_idx, lua_ret_block);
 
     char* impl_c_str = (char*)malloc((impl.length + 1/* + 5*/) * sizeof(char));
-    size_t impl_c_str_len = wcstombs(impl_c_str, impl.c_str, impl.length);
+    size_t impl_c_str_len = wcstombsw(impl_c_str, impl.c_str, impl.length);
     //strncpy(impl_c_str + impl.length, "\nend\n", 5);
     impl_c_str[impl.length] = '\0';
 
@@ -531,40 +523,41 @@ typedef struct {
 #define INCLUDE_ONCE 1
 #define INCLUDE_GLOB 2
 
-void htmw_apply_includes(string* in, u_map* includes) {
+//
+void htmw_apply_includes(string* in, u_map* includes, list* global_include_paths, int enable_network) {
     list* dirs = list_new();    // list of include_dir
     size_t difference = 0;
-    wchar_t c;
+    charw c;
     //printf("in->length: %zu\n", in->length);
     for (size_t idx = 0; idx < in->length; idx++) {
         c = in->c_str[idx];
         //printf("i: %zu\tlen: %zu\tc: '%lc'\n", idx, in->length, c);
-        if (c == L'<') {
-            if (!wcsncmp(in->c_str + idx + 1, L"@include", 8)) {
+        if (c == charl('<')) {
+            if (!strncmpw(in->c_str + idx + 1, strl("@include"), 8)) {
 #if DEBUG_MODE
                 //printf("after include kw: \"%lc\"\n", in->c_str[idx + 1 + 8]);
 #endif
-                wchar_t c;
+                charw c;
                 uint8_t phase = 0;
                 flag_t flags = 0;
                 size_t path_begin_idx = 0;
                 string view = nullstr;
-                wchar_t delim = L'\0';
+                charw delim = charl('\0');
                 include_dir* incl = (include_dir*)malloc(sizeof(include_dir));
-                for (size_t i = 0; (c = in->c_str[idx + 1 + 8 + i]) != L'\0'; i++) {
+                for (size_t i = 0; (c = in->c_str[idx + 1 + 8 + i]) != charl('\0'); i++) {
                     switch (c) {
-                    case L' ':
-                    case L'\n':
-                    case L'\t':
-                    case L'\r':
+                    case charl(' '):
+                    case charl('\n'):
+                    case charl('\t'):
+                    case charl('\r'):
                         if (!phase) {
                             phase = 1;
                         } else if (phase == 4) {
                             throw_error("Tags cannot contain whitespaces at the end (after the '/')", E_EXIT);
                         }
                         break;
-                    case L'"':
-                    case L'\'':
+                    case charl('"'):
+                    case charl('\''):
                         if (phase == 0 || phase == 1) {
                             view.c_str = in->c_str + idx + 1 + 8 + i + 1;
                             path_begin_idx = i;
@@ -579,13 +572,13 @@ void htmw_apply_includes(string* in, u_map* includes) {
                             throw_error("Invalid character ''' or '\"' in include directive", E_EXIT);
                         }
                         break;
-                    case L'<':
+                    case charl('<'):
                         if (phase == 0 || phase == 1) {
                             flags |= INCLUDE_GLOB;
                             view.c_str = in->c_str + idx + 1 + 8 + i + 1;
                             path_begin_idx = i;
                             phase = 2;
-                            delim = L'>';
+                            delim = charl('>');
                         } else {
 #if DEBUG_MODE
                             //printf("after include: \"%lc\"\n", in->c_str[idx + 1 + 8 + i + 1]);
@@ -593,12 +586,12 @@ void htmw_apply_includes(string* in, u_map* includes) {
                             throw_error("Invalid character '<' in include directive", E_EXIT);
                         }
                         break;
-                    case L'>':
+                    case charl('>'):
 #if DEBUG_MODE
                             //printf("phase: \"%u\"\n", phase);
 #endif
                         if (phase == 2) {
-                            if (delim == L'>') {
+                            if (delim == charl('>')) {
                                 view.length = i - 1 - path_begin_idx;
                                 phase = 3;
                             } else {
@@ -614,13 +607,13 @@ void htmw_apply_includes(string* in, u_map* includes) {
                             throw_error("No include path specified", E_EXIT);
                         }
                         break;
-                    case L'/':
+                    case charl('/'):
                         if (phase == 3)
                             phase = 4;
                         break;
                     default:
                         if (!phase) {
-                            if (!wcsncmp(in->c_str + idx + 1 + 8 + i, L"_once", 5)) {
+                            if (!strncmpw(in->c_str + idx + 1 + 8 + i, strl("_once"), 5)) {
                                 flags |= INCLUDE_ONCE;
                                 phase = 1;
                                 i += 4;
@@ -647,40 +640,103 @@ void htmw_apply_includes(string* in, u_map* includes) {
                 string* content = NULL;
                 if (flag_includes(flags, INCLUDE_GLOB)) {
                     path = str_new(view.length + 2);
-                    str_append_ch(&path, L'>');
+                    str_append_ch(&path, charl('>'));
+                    //str_debug(path);
+                    //str_debug(view);
+                    //printf("-----%ls-----", view.c_str);
                     str_append(&path, view.c_str, view.length);
                 } else {
                     path = str_cpy(view);
                 }
                 
+                /////// READ FILE ///////
                 if (!map_get(includes, path.c_str, &content)) {
                     //map_set(includes, path.c_str, (void*)content, 0);
 
                     content = (string*)malloc(sizeof(string));
                     if (flag_includes(flags, INCLUDE_GLOB)) {
                         
-                        char* path_c_str = (char*)malloc((path.length + 1 + 8) * sizeof(char));
-                        sprintf(path_c_str, "include/%ls", path.c_str + 1);
-                        //wcstombs(path_c_str, path.c_str + 1, path.length);
-                        path_c_str[path.length + 8] = '\0';
-                        if (!strncmp(path_c_str + 8, "https://", 8) || !strncmp(path_c_str + 8, "http://", 7)) {
+                        //char* path_c_str = (char*)malloc((path.length + 1 + 8) * sizeof(char));
+                        //sprintf(path_c_str, "include/%ls", path.c_str + 1);
+                        ////wcstombsw(path_c_str, path.c_str + 1, path.length);
+                        //path_c_str[path.length + 8] = '\0';
+
+                        
+                        //if (!strncmp(path_c_str + 8, "https://", 8) || !strncmp(path_c_str + 8, "http://", 7)) {
+                        //str_debug(path);
+                        if (!strncmpw(path.c_str + 1, strl("https://"), 8) || !strncmpw(path.c_str + 1, strl("http://"), 7)) {
                             // TODO: implement HTTP Include
-                            throw_error("HTTP Include is not implemented yet", E_EXIT);
+                            //throw_error("HTTP Include is not implemented yet", E_EXIT);
+                            if (!enable_network)
+                                throw_error("HTTP Include is disabled, use the `-N` flag to enable it", E_EXIT);
+                            char* path_c_str = (char*)malloc((path.length + 1) * sizeof(char));//puts("b");
+                            #if WCHAR_ENABLED
+                            sprintf(path_c_str, "%ls", path.c_str + 1);
+                            #else
+                            sprintf(path_c_str, "%s", path.c_str + 1);
+                            #endif
+                            //wcstombsw(path_c_str, path.c_str + 1, );
+                            path_c_str[path.length] = '\0';
+                            *content = read_file_network(path_c_str);
+                            htmw_apply_includes(content, includes, global_include_paths, enable_network);
+                            free(path_c_str);
                         } else {
 #if DEBUG_MODE
                             //printf("path: %s\n", path_c_str);
 #endif
+
+                            //printf("___________%zu\n", (path.length + GLOBAL_INCLUDE_PATH_LEN) * sizeof(char));
+                            list_node* ln = global_include_paths->head;
+                            char* path_c_str = NULL;
+                            while (ln != NULL) {
+                                const string* global_include_path = (string*)ln->data;
+                                char* path_c_str_buffer = (char*)malloc((path.length + 1 + global_include_path->length) * sizeof(char));
+                                #if WCHAR_ENABLED
+                                sprintf(path_c_str_buffer, "%s/%ls", global_include_path->c_str, path.c_str + 1);
+                                #else
+                                sprintf(path_c_str_buffer, "%s/%s",  global_include_path->c_str, path.c_str + 1);
+                                #endif
+                                path_c_str_buffer[path.length + global_include_path->length] = '\0';
+                                #ifdef _WIN32
+                                    for (size_t i = 0; i < path.length; i++) {
+                                        if (path_c_str[i] == '/') {
+                                            path_c_str[i] = '\\';
+                                        }
+                                    }
+                                #endif
+                                // OPTIMIZATION NEEDED
+                                const FILE* f = fopen(path_c_str_buffer, "r");
+                                if (f != NULL) {
+                                    path_c_str = path_c_str_buffer;
+                                    fclose(f);
+                                    break;
+                                }
+                                free(path_c_str_buffer);
+                                ln = ln->next;
+                            }
+                            if (path_c_str == NULL) {
+                                char msg[256];
+                                sprintf(msg, "Couldn't open global include file: \"%s\"", path.c_str + 1);
+                                throw_error(msg, E_EXIT);
+                            }
                             *content = read_file(path_c_str, 1);
-                            htmw_apply_includes(content, includes);
+                            htmw_apply_includes(content, includes, global_include_paths, enable_network);
+                            free(path_c_str);
                         }
                     
-                        free(path_c_str);
                     } else {
                         char* path_c_str = (char*)malloc((path.length + 1) * sizeof(char));
-                        wcstombs(path_c_str, path.c_str, path.length);
+                        wcstombsw(path_c_str, path.c_str, path.length);
                         path_c_str[path.length] = '\0';
+                        #ifdef _WIN32
+                            for (size_t i = 0; i < path.length; i++) {
+                                if (path_c_str[i] == '/') {
+                                    path_c_str[i] = '\\';
+                                }
+                            }
+                        #endif
                         *content = read_file(path_c_str, 0);
-                        htmw_apply_includes(content, includes);
+                        htmw_apply_includes(content, includes, global_include_paths, enable_network);
                         free(path_c_str);
                     }
                 } else if (flag_includes(flags, INCLUDE_ONCE)) {
@@ -696,46 +752,112 @@ void htmw_apply_includes(string* in, u_map* includes) {
                     content = (string*)malloc(sizeof(string));
                     if (flag_includes(flags, INCLUDE_GLOB)) {
                         
-                        char* path_c_str = (char*)malloc((path.length + 1 + 8) * sizeof(char));
-                        sprintf(path_c_str, "include/%ls", path.c_str + 1);
-                        //wcstombs(path_c_str, path.c_str + 1, path.length);
-                        path_c_str[path.length + 8] = '\0';
-                        if (!strncmp(path_c_str + 8, "https://", 8) || !strncmp(path_c_str + 8, "http://", 7)) {
+                        ///////////////////////
+
+
+                        if (!strncmpw(path.c_str + 1, strl("https://"), 8) || !strncmpw(path.c_str + 1, strl("http://"), 7)) {
                             // TODO: implement HTTP Include
-                            throw_error("HTTP Include is not implemented yet", E_EXIT);
+                            //throw_error("HTTP Include is not implemented yet", E_EXIT);
+                            if (!enable_network)
+                                throw_error("HTTP Include is disabled, use the `-N` flag to enable it", E_EXIT);
+                            char* path_c_str = (char*)malloc((path.length + 1) * sizeof(char));//puts("b");
+                            #if WCHAR_ENABLED
+                            sprintf(path_c_str, "%ls", path.c_str + 1);
+                            #else
+                            sprintf(path_c_str, "%s", path.c_str + 1);
+                            #endif
+                            //wcstombsw(path_c_str, path.c_str + 1, );
+                            path_c_str[path.length] = '\0';
+                            *content = read_file_network(path_c_str);
+                            htmw_apply_includes(content, includes, global_include_paths, enable_network);
+                            free(path_c_str);
                         } else {
 #if DEBUG_MODE
                             //printf("path: %s\n", path_c_str);
 #endif
+
+                            //printf("___________%zu\n", (path.length + GLOBAL_INCLUDE_PATH_LEN) * sizeof(char));
+                            list_node* ln = global_include_paths->head;
+                            char* path_c_str = NULL;
+                            while (ln != NULL) {
+                                const string* global_include_path = (string*)ln->data;
+                                char* path_c_str_buffer = (char*)malloc((path.length + 2 + global_include_path->length) * sizeof(char));
+                                #if WCHAR_ENABLED
+                                sprintf(path_c_str, "%s/%ls", global_include_path->c_str, path.c_str + 1);
+                                #else
+                                sprintf(path_c_str_buffer, "%s/%s",  global_include_path->c_str, path.c_str + 1);
+                                #endif
+                                path_c_str_buffer[path.length + global_include_path->length + 1] = '\0';
+                                #ifdef _WIN32
+                                    for (size_t i = 0; i < path.length; i++) {
+                                        if (path_c_str[i] == '/') {
+                                            path_c_str[i] = '\\';
+                                        }
+                                    }
+                                #endif
+                                // OPTIMIZATION NEEDED
+                                const FILE* f = fopen(path_c_str_buffer, "r");
+                                if (f != NULL) {
+                                    path_c_str = path_c_str_buffer;
+                                    fclose(f);
+                                    break;
+                                }
+                                free(path_c_str_buffer);
+                            }
+                            if (path_c_str == NULL) {
+                                char msg[256];
+                                sprintf(msg, "Couldn't open global include path file: \"%s\"", path.c_str);
+                                throw_error(msg, E_EXIT);
+                            }
                             *content = read_file(path_c_str, 1);
-                            htmw_apply_includes(content, includes);
+                            htmw_apply_includes(content, includes, global_include_paths, enable_network);
+                            free(path_c_str);
                         }
                     
-                        free(path_c_str);
                     } else {
                         char* path_c_str = (char*)malloc((path.length + 1) * sizeof(char));
-                        wcstombs(path_c_str, path.c_str, path.length);
+                        wcstombsw(path_c_str, path.c_str, path.length);
+                        path_c_str[path.length] = '\0';
+                        #ifdef _WIN32
+                            for (size_t i = 0; i < path.length; i++) {
+                                if (path_c_str[i] == '/') {
+                                    path_c_str[i] = '\\';
+                                }
+                            }
+                        #endif
+                        *content = read_file(path_c_str, 0);
+                        htmw_apply_includes(content, includes, global_include_paths, enable_network);
+                        free(path_c_str);
+                    }
+
+
+                        ////////////////////////
+
+
+                    /*} else {
+                        char* path_c_str = (char*)malloc((path.length + 1) * sizeof(char));
+                        wcstombsw(path_c_str, path.c_str, path.length);
                         path_c_str[path.length] = '\0';
                         *content = read_file(path_c_str, 0);
                         htmw_apply_includes(content, includes);
                         free(path_c_str);
-                    }
+                    }*/
 
 
                 }
                 incl->path = path;
                 incl->content = content;
 #if DEBUG_MODE
-                puts("_____________________________________");
+                /*puts("_____________________________________");
                 if (content != NULL)
                     str_debug(*content);
                 else
-                    puts("(null)");
+                    puts("(null)");*/
 #endif
                 map_set(includes, path.c_str, (void*)content, 0);
                 list_add(dirs, (void*)incl); // TODO: fix idx and length and replace includes with their file content
 #if DEBUG_MODE
-                printf("idx: %zu\nlen: %zu\npath: \"%ls\"\n-------\n\n", incl->idx, incl->replaced_length, incl->path.c_str);
+                //printf("idx: %zu\nlen: %zu\npath: \"%ls\"\n-------\n\n", incl->idx, incl->replaced_length, incl->path.c_str);
 #endif
             }
         }
@@ -827,14 +949,27 @@ void htmw_apply_includes(string* in, u_map* includes) {
 }
 
 // parses all the <@...> tags, and returns a clean string with saved templates + state in the context struct
-htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
+htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx, list *global_paths, int enable_network) {
     string post_in = str_new(MAX_LEN_OUT);
+
+    /*list* global_paths;
+
+    if (ectx == NULL) {
+        global_paths = list_new();
+        char* path = NULL;
+
+        
+
+        if (path != NULL) {
+            list_add(global_paths, (void*)path);
+        }
+    }*/
 
     u_map* templates = ectx == NULL ? map_new() : ectx->templates;
     u_map* includes = ectx == NULL ? map_new() : ectx->includes;
 
     //if (ectx == NULL)             commented out in case users want dynamic includes
-    htmw_apply_includes(&in, includes);
+    htmw_apply_includes(&in, includes, global_paths, enable_network);
 
     int comment_mode = 0;
     int php_mode = 0;
@@ -842,36 +977,37 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
     size_t last_idx = 0;
     htmw_mode mode = h_null;
 
-    wchar_t c;
+    charw c;
 
     ht_any current;
     string current_template_name = nullstr;
-    for (size_t idx = 0; (c = in.c_str[idx]) != L'\0'; idx++) {
+    size_t no_out_count = 0;
+    for (size_t idx = 0; (c = in.c_str[idx]) != charl('\0'); idx++) {
         //putwc(c, stdout);
         switch (mode) {
         case h_null:
-            /*if (in.c_str[idx + 1] == L'\0') {
+            /*if (in.c_str[idx + 1] == charl('\0')) {
                 //last_idx = idx;
                 str_append(&post_in, in.c_str + last_idx, idx - last_idx + 1);
             } */if (comment_mode) {
-                if (c == L'-') {
-                    if (!wcsncmp(in.c_str + idx, L"-->", 3)) {
+                if (c == charl('-')) {
+                    if (!strncmpw(in.c_str + idx, strl("-->"), 3)) {
                         comment_mode = 0;
                         idx += 2;
                     } else continue;
                 } else continue;
             }
             if (php_mode) {
-                if (c == L'?') {
-                    if (!wcsncmp(in.c_str + idx, L"?>", 2)) {
+                if (c == charl('?')) {
+                    if (!strncmpw(in.c_str + idx, strl("?>"), 2)) {
                         php_mode = 0;
                         idx += 1;
                     } else continue;
                 } else continue;
             }
 
-            if (c == L'<') {
-                if (!wcsncmp(in.c_str + idx + 1, L"@template ", 10)) {
+            if (c == charl('<')) {
+                if (!strncmpw(in.c_str + idx + 1, strl("@template "), 10)) {
                     //str_append(&post_in, in.c_str + last_idx, idx - last_idx - 1);
                     mode = h_template;
                     ht_template* t = (ht_template*)malloc(sizeof(ht_template));
@@ -880,14 +1016,14 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
                     t->impl = nullstr;
                     current.template = t;
 
-                    wchar_t c;
+                    charw c;
                     string name = str_new(128);
                     size_t i = 0;
                     idx += 10;
                     int sty = 0;
-                    for (; (c = in.c_str[idx + i]) != L'\0'; i++) {
-                        if (c >= L'a' && c <= L'z' || c >= L'A' && c <= L'Z' || c >= L'0' && c <= L'9' || c == L'_'/* || c == L'-'*/) {
-                            if (!sty && !wcsncmp(in.c_str + idx + i, L"ninner", 6) && (in.c_str[idx + i + 6] == L' ' || in.c_str[idx + i + 6] == L'\n' || in.c_str[idx + i + 6] == L'\t' || in.c_str[idx + i + 6] == L'\r')) {
+                    for (; (c = in.c_str[idx + i]) != charl('\0'); i++) {
+                        if (c >= charl('a') && c <= charl('z') || c >= charl('A') && c <= charl('Z') || c >= charl('0') && c <= charl('9') || c == charl('_')/* || c == charl('-')*/) {
+                            if (!sty && !strncmpw(in.c_str + idx + i, strl("ninner"), 6) && (in.c_str[idx + i + 6] == charl(' ') || in.c_str[idx + i + 6] == charl('\n') || in.c_str[idx + i + 6] == charl('\t') || in.c_str[idx + i + 6] == charl('\r'))) {
                                 t->ninner = 1;
                                 idx += 6;
                                 continue;
@@ -910,11 +1046,11 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
                     size_t args_len = 0;
                     size_t impl_idx_begin = 0;
                     int impl_inner_braces = 0;
-                    wchar_t in_str_type = '\0';
+                    charw in_str_type = '\0';
                     int in_str_backslashing = 0;
                     char lua_comment_mode = 0;
                     size_t temp = i;
-                    for (; (c = in.c_str[idx + i]) != L'\0'; i++) {
+                    for (; (c = in.c_str[idx + i]) != charl('\0'); i++) {
                         if (i - temp >= 60)
                             printf("");
                         if (in_str_backslashing) {
@@ -922,7 +1058,7 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
                             continue;
                         }
                         switch (c) {
-                        case L'(':
+                        case charl('('):
                         {
                             if (constructing_constructor == 0) {
                                 args_len = 0;
@@ -935,18 +1071,18 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
                                 // TODO: throw exception
                             }
                         } break;
-                        case L',':
+                        case charl(','):
                         {
                             if (constructing_constructor == 1) {
                                 args_len++;
-                                if (in_str_type == L'\0')
+                                if (in_str_type == charl('\0'))
                                     args_count++;
                             }
                         } break;
-                        case L')':
+                        case charl(')'):
                         {
                             if (constructing_constructor == 1) {
-                                if (in_str_type != L'\0') {
+                                if (in_str_type != charl('\0')) {
                                     args_len++;
                                     break;
                                 }
@@ -959,15 +1095,15 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
                                 // TODO: throw exception
                             }
                         } break;
-                        case L'{':
+                        case charl('{'):
                         {
                             if (constructing_constructor == 2 || constructing_constructor == 0) {
                                 constructing_constructor = 3;
                                 constructor_begin_idx_impl = idx + i + 1;
                                 impl_idx_begin = i;
                                 impl.c_str = in.c_str + constructor_begin_idx_impl;
-                                in_str_type = L'\0';
-                            } else if (constructing_constructor == 3 && in_str_type == L'\0' && !lua_comment_mode) {
+                                in_str_type = charl('\0');
+                            } else if (constructing_constructor == 3 && in_str_type == charl('\0') && !lua_comment_mode) {
                                 impl_inner_braces++;
                             } else if (constructing_constructor == 1) {
                                 args_len++;
@@ -975,9 +1111,9 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
                                 // TODO: throw exception
                             }
                         } break;
-                        case L'}':
+                        case charl('}'):
                         {
-                            if (constructing_constructor == 3 && in_str_type == L'\0' && !lua_comment_mode) {
+                            if (constructing_constructor == 3 && in_str_type == charl('\0') && !lua_comment_mode) {
                                 if (!impl_inner_braces) {
                                     constructing_constructor = 4;
                                     impl.length = i - impl_idx_begin - 1;
@@ -992,48 +1128,48 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
                                 // TODO: throw exception
                             }
                         } break;
-                        case L'\\':
+                        case charl('\\'):
                         {
                             if (constructing_constructor == 3) {
-                                if (in_str_type != L'\0') {
+                                if (in_str_type != charl('\0')) {
                                     in_str_backslashing = !in_str_backslashing;
                                 }
                             }
                         } break;
-                        case L'"':
-                        case L'\'':
+                        case charl('"'):
+                        case charl('\''):
                         {
                             if (constructing_constructor == 3 && !lua_comment_mode) {
-                                if (in_str_type == L'\0') {
+                                if (in_str_type == charl('\0')) {
                                     in_str_type = c;
                                 } else if (in_str_type == c && !in_str_backslashing) {
-                                    in_str_type = L'\0';
+                                    in_str_type = charl('\0');
                                 }
                             } else if (constructing_constructor == 1) {
                                 // default args
-                                if (in_str_type == L'\0') {
+                                if (in_str_type == charl('\0')) {
                                     in_str_type = c;
                                 } else if (in_str_type == c/* && !in_str_backslashing*/) {
-                                    in_str_type = L'\0';
+                                    in_str_type = charl('\0');
                                 }
                                 args_len++; //
                             } else {
                                 // TODO: throw exception
                             }
                         } break;
-                        case L'\n':
-                        case L'\r':
+                        case charl('\n'):
+                        case charl('\r'):
                         {
                             if (constructing_constructor == 3) {
                                 if (lua_comment_mode == 1) {
                                     lua_comment_mode = 0;
-                                } else if (in_str_type == L'"' || in_str_type == L'\'') {
-                                    in_str_type = L'\0';
+                                } else if (in_str_type == charl('"') || in_str_type == charl('\'')) {
+                                    in_str_type = charl('\0');
                                 }
                             }
                         }
-                        case L' ':
-                        case L'\t':
+                        case charl(' '):
+                        case charl('\t'):
                         {
                             if (constructing_constructor == 1) {
                                 args_len++;
@@ -1041,9 +1177,13 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
                             //continue;
                             //goto pre_process_template_for_switch_continue;
                         } break;
-                        case L'>':
+                        case charl('>'):
                         {
-                            if (constructing_constructor == 1) {
+                            if (constructing_constructor == 0) {
+                                parse_template_args(t, args, args_count);
+                                idx += i;
+                                goto pre_process_for_switch_continue;
+                            } else if (constructing_constructor == 1) {
                                 args_len++;
                                 // TODO: throw exception
                             } else if (constructing_constructor != 3) {
@@ -1059,29 +1199,29 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
                                 if (!args_count) args_count++;
                                 args_len++;
                             } else if (constructing_constructor == 3) {
-                                if (c == L'-' && !lua_comment_mode && in_str_type == L'\0') {
-                                    if (!wcsncmp(in.c_str + idx + i, L"--[[", 4)) {
+                                if (c == charl('-') && !lua_comment_mode && in_str_type == charl('\0')) {
+                                    if (!strncmpw(in.c_str + idx + i, strl("--[["), 4)) {
                                         //puts("lua_comment_mode = 2");
                                         i += 3;
                                         lua_comment_mode = 2;
-                                    } else if (!wcsncmp(in.c_str + idx + i, L"--", 2)) {
+                                    } else if (!strncmpw(in.c_str + idx + i, strl("--"), 2)) {
                                         //puts("lua_comment_mode = 1");
                                         i++;
                                         lua_comment_mode = 1;
                                     }
                                 } else {
-                                    if (c == L']' && !wcsncmp(in.c_str + idx + i, L"]]", 2)) {
+                                    if (c == charl(']') && !strncmpw(in.c_str + idx + i, strl("]]"), 2)) {
                                         if (lua_comment_mode == 2) {
                                             i++;
                                             //puts("lua_comment_mode = 0");
                                             lua_comment_mode = 0;
-                                        } else if (in_str_type = L']' && !in_str_backslashing) {
+                                        } else if (in_str_type = charl(']') && !in_str_backslashing) {
                                             i++;
-                                            in_str_type = L'\0';
+                                            in_str_type = charl('\0');
                                         }
-                                    } else if (c == L'[' && !wcsncmp(in.c_str + idx + i, L"[[", 2) && !lua_comment_mode) {
+                                    } else if (c == charl('[') && !strncmpw(in.c_str + idx + i, strl("[["), 2) && !lua_comment_mode) {
                                         i++;
-                                        in_str_type = L'[';
+                                        in_str_type = charl('[');
                                     }
                                 }
                             }
@@ -1089,20 +1229,21 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
                         }
                         //pre_process_template_for_switch_continue:
                     }
-                } else if (!wcsncmp(in.c_str + idx + 1, L"@no>", 4)) {
+                } else if (!strncmpw(in.c_str + idx + 1, strl("@no>"), 4)) {
                     //puts("no mode");
                     ///str_append(&post_in, in.c_str + last_idx, idx - last_idx - 1); // NEGATIVE SUM ON ZERO
                     mode = h_no;
+                    no_out_count = 0;
                     goto pre_process_for_switch_continue;
-                } else if (!wcsncmp(in.c_str + idx + 1, L"@comment>", 9)) {
+                } else if (!strncmpw(in.c_str + idx + 1, strl("@comment>"), 9)) {
                     //str_append(&post_in, in.c_str + last_idx, idx - last_idx - 1);
                     mode = h_comment;
                     goto pre_process_for_switch_continue;
-                } else if (!wcsncmp(in.c_str + idx + 1, L"@ntxt>", 6)) {
+                } else if (!strncmpw(in.c_str + idx + 1, strl("@ntxt>"), 6)) {
                     ntxt_out_count++;
                     idx += 6;
                     goto pre_process_for_switch_continue;
-                } else if (!wcsncmp(in.c_str + idx + 1, L"/@ntxt>", 7)) {
+                } else if (!strncmpw(in.c_str + idx + 1, strl("/@ntxt>"), 7)) {
                     if (ntxt_out_count > 0) {
                         ntxt_out_count--;
                     }
@@ -1121,7 +1262,7 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
         case h_template:
             //puts("----------------");
             //printf("__/___%lc____", c);
-            if (c == L'<' && !wcsncmp(in.c_str + idx + 1, L"/@template>", 11)) {
+            if (c == charl('<') && !strncmpw(in.c_str + idx + 1, strl("/@template>"), 11)) {
                 //puts("___________________________________________________________________________________");
                 mode = h_null;
                 map_set(templates, current.template->name.c_str, current.template, 0);
@@ -1147,14 +1288,28 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
             }
             break;
         case h_no:
-            if (c == L'<' && !wcsncmp(in.c_str + idx + 1, L"/@no>", 5)) {
-                mode = h_null;
-                idx += 5;
-                last_idx = idx + 1;
+            if (c == charl('<')) {
+                if (!strncmpw(in.c_str + idx + 1, strl("/@no>"), 5)) {
+                    //puts("no end");
+                    //no_out_count--;
+                    //printf("1: %zu\n", no_out_count);
+                    if (no_out_count-- == 0) {
+                        //puts("no dnd");
+                        mode = h_null;
+                    }
+                    idx += 5;
+                    last_idx = idx + 1;
+                } else if (!strncmpw(in.c_str + idx + 1, strl("@no>"), 4)) {
+                    //puts("no nst");
+                    no_out_count++;
+                    //printf("2: %zu\n", no_out_count);
+                    idx += 4;
+                    last_idx = idx + 1;
+                }
             }
             break;
         case h_comment:
-            if (c == L'<' && !wcsncmp(in.c_str + idx + 1, L"/@comment>", 10)) {
+            if (c == charl('<') && !strncmpw(in.c_str + idx + 1, strl("/@comment>"), 10)) {
                 mode = h_null;
                 idx += 10;
                 last_idx = idx + 1;
@@ -1167,6 +1322,7 @@ htmw_context htmw_preprocess(lua_State* L, string in, htmw_context* ectx) {
         flags |= CTX_HEAD;
     }
     return (htmw_context) {
+        global_paths,
         includes,
         templates,
         post_in,
@@ -1194,16 +1350,16 @@ ht_template_core* htmw_process_template_inner(ht_template t) {
     //list_add(var_idxs, idx);
     //out.fields_count = 0;
     for (size_t i = 0; i < inner.length + 1; i++) {
-        wchar_t c = inner.c_str[i];
+        charw c = inner.c_str[i];
 
         if (dollar_mode) {
-            if (c >= L'a' && c <= L'z' || c >= L'A' && c <= L'Z' || c >= L'0' && c <= L'9' || c == L'_') {
+            if (c >= charl('a') && c <= charl('z') || c >= charl('A') && c <= charl('Z') || c >= charl('0') && c <= charl('9') || c == charl('_')) {
                 last_dollar_len++;
                 continue;
-            } else if (c == L'$') {
+            } else if (c == charl('$')) {
                 if (!last_dollar_len) { // $$
                     dollar_mode = 0;
-                    str_append_ch(&ground, L'$');
+                    str_append_ch(&ground, charl('$'));
                     difference++;
                 } else { // $x$
                     difference += last_dollar_len + 1;
@@ -1221,7 +1377,7 @@ ht_template_core* htmw_process_template_inner(ht_template t) {
                         //puts("\n\nalready registered\n\n");
                         *idx_buffer = (field_location){ i - difference, map_find_result + 1 };
                     } else {
-                        if (wcscmp(name.c_str, L"INNER")) {
+                        if (strcmpw(name.c_str, strl("INNER"))) {
                             len_buffer = (size_t*)malloc(sizeof(size_t));
                             *len_buffer = name.length;
                             var_name_alloc_size_tot += *len_buffer + 1;
@@ -1239,6 +1395,9 @@ ht_template_core* htmw_process_template_inner(ht_template t) {
                     last_dollar_idx_begin = i + 1;
                     last_dollar_len = 0;
                 }
+            } else if (c == charl('#')) {
+                dollar_mode = 0;
+                difference += 2;
             } else {
                 dollar_mode = 0;
                 if (last_dollar_len) {
@@ -1258,7 +1417,7 @@ ht_template_core* htmw_process_template_inner(ht_template t) {
                         //puts("\n\nalready registered\n\n");
                         *idx_buffer = (field_location){ i - difference, map_find_result + 1 };
                     } else {
-                        if (wcscmp(name.c_str, L"INNER")) {
+                        if (strcmpw(name.c_str, strl("INNER"))) {
                             len_buffer = (size_t*)malloc(sizeof(size_t));
                             *len_buffer = name.length;
                             var_name_alloc_size_tot += *len_buffer + 1;
@@ -1276,10 +1435,11 @@ ht_template_core* htmw_process_template_inner(ht_template t) {
                     last_dollar_len = 0;
                 } else {
                     difference++;
-                    str_append_ch(&ground, L'$');
+                    str_append_ch(&ground, c);
+                    //str_append_ch(&ground, charl('$'));
                 }
             }
-        } else if (c == L'$') {
+        } else if (c == charl('$')) {
             dollar_mode = 1;
             last_dollar_idx_begin = i + 1;
             last_dollar_len = 0;
@@ -1291,28 +1451,28 @@ ht_template_core* htmw_process_template_inner(ht_template t) {
     ht_template_core* out = (ht_template_core*)malloc(sizeof(ht_template_core));
     out->fields_count = fields->size;
     out->shifts_count = variables->size;
-    out->field_names = (wchar_t*)malloc(var_name_alloc_size_tot * sizeof(wchar_t));
+    out->field_names = (charw*)malloc(var_name_alloc_size_tot * sizeof(charw));
     out->field_shifts = (size_t*)malloc(variables->size * sizeof(size_t));
     out->fields = (field_location*)malloc(fields->size * sizeof(field_location));
     out->ground = ground;
 
-    wcsncpy(out->field_names, L"INNER", 5);
-    out->field_names[5] = L'\0';
+    strncpyw(out->field_names, strl("INNER"), 5);
+    out->field_names[5] = charl('\0');
 
     size_t shift = 6;
     for (size_t i = 0; i < variables->size; i++) {
         u_map_node* umn = mapn_at(variables->head, i);
         //printf("<--token: %ls->>>", umn->token);
         //printf("<--token: %zu->>>", *(size_t*)umn->data);
-        wcsncpy(out->field_names + shift, umn->token, *(size_t*)umn->data);
+        strncpyw(out->field_names + shift, umn->token, *(size_t*)umn->data);
         shift += *(size_t*)umn->data + 1;
         out->field_shifts[i] = shift;
         //printf("<--shift: %zu->>>", shift);
         free(umn->data);
-        out->field_names[shift - 1] = L'\0';
+        out->field_names[shift - 1] = charl('\0');
     }
     //out->field_shifts[variables->size] = shift;
-    out->field_names[var_name_alloc_size_tot - 1] = L'\0';
+    out->field_names[var_name_alloc_size_tot - 1] = charl('\0');
 
     list_node* ln = fields->head;
     for (size_t i = 0; i < fields->size; i++) {
@@ -1374,24 +1534,24 @@ string template_fill(ht_template_core* core, const string* values, const string 
 }
 
 // process the template and returns a string
-string process_template(htmw_context ctx, const ht_template* t, const wchar_t** args, const string inner) {
+string process_template(htmw_context ctx, const ht_template* t, const charw** args, const string inner) {
     ht_template_core* core = t->core;
     lua_State* L = ctx.L;
 
     //char* template_name = (char*)malloc((t->name.length + 1) * sizeof(char));
     char* construct_name = (char*)malloc((t->name.length + 21 + 1) * sizeof(char));
     strncpy(construct_name, "__template_construct_", 21);
-    wcstombs(construct_name + 21, t->name.c_str, t->name.length);
+    wcstombsw(construct_name + 21, t->name.c_str, t->name.length);
     construct_name[t->name.length + 21] = '\0';
 
     lua_getglobal(L, construct_name);
     //ht_template_arg* = t->args->data
     for (size_t i = 0; i < t->args->size; i++) {
-        if (args[i][0] == L'\b') {
+        if (args[i][0] == charl('\b')) {
             lua_pushnil(L);
-        } else if (args[i][0] == L'\r') {
+        } else if (args[i][0] == charl('\r')) {
             //char* lin = (char*)malloc((wlin.length + 1 + 16 + 1 - 1) * sizeof(char)); // len + null terminator + "return tostring(" + ")" - "\r"
-            size_t lin_len = wcslen(args[i]);
+            size_t lin_len = strlenw(args[i]);
             char* lin = (char*)malloc((lin_len + 9 + 1) * sizeof(char));//printf("-----------|%ls|---\n", args[i] + 1);
             lin[0] = 'r';
             lin[1] = 'e';
@@ -1401,7 +1561,7 @@ string process_template(htmw_context ctx, const ht_template* t, const wchar_t** 
             lin[5] = 'n';
             lin[6] = ' ';
             lin[7] = '(';
-            wcstombs(lin + 8, args[i] + 1, lin_len - 1);
+            wcstombsw(lin + 8, args[i] + 1, lin_len - 1);
             lin[lin_len + 8 - 1] = ')';
             lin[lin_len + 9 - 1] = '\0';
             int r = luaL_loadstring(L, lin);
@@ -1421,7 +1581,7 @@ string process_template(htmw_context ctx, const ht_template* t, const wchar_t** 
             char arg[4096];
             //printf(">>>> %p\n", args[i]);
             //printf("2) %p -> \"%ls\"\n", args[i], args[i]);
-            wcstombs(arg, args[i], 4095);
+            wcstombsw(arg, args[i], 4095);
             lua_pushstring(L, arg);
         }
     }
@@ -1432,7 +1592,7 @@ string process_template(htmw_context ctx, const ht_template* t, const wchar_t** 
             string* lvs = (string*)malloc(core->shifts_count * sizeof(string));
             for (size_t i = 0; i < core->shifts_count; i++) {
                 char k[4096];
-                wcstombs(k, core->field_names + (i ? core->field_shifts[i - 1] : 6), 4095);
+                wcstombsw(k, core->field_names + (i ? core->field_shifts[i - 1] : 6), 4095);
                 k[core->field_shifts[i] - 1] = '\0';
                 lua_pushstring(L, k);
                 lua_gettable(L, -2);
@@ -1442,8 +1602,12 @@ string process_template(htmw_context ctx, const ht_template* t, const wchar_t** 
                 lvs[i] = str_new(4096);
                 char c;
                 for (size_t j = 0; (c = v[j]) != '\0'; j++) {
-                    wchar_t wc;
+                    charw wc;
+                    #if WCHAR_ENABLED
                     int r = mbtowc(&wc, v + j, MB_CUR_MAX);
+                    #else
+                    wc = c;
+                    #endif
                     //printf("i: %d => %lc\n" , r, wc);
                     str_append_ch(&lvs[i], wc);
                 }
@@ -1456,7 +1620,7 @@ string process_template(htmw_context ctx, const ht_template* t, const wchar_t** 
             }
             free(lvs);
             // TODO: re-process AND FREE MEMORY
-            htmw_context inner_ctx = htmw_preprocess(ctx.L, filled, &ctx);
+            htmw_context inner_ctx = htmw_preprocess(ctx.L, filled, &ctx, ctx.global_paths, ctx.flags & CTX_NETWORK);
             txt_template_fill_data tfd = htmw_process_txt(inner_ctx);
             //str_debug(inner_ctx.input);
             //printf("___%ls\n", ((ht_template_core*)inner_ctx.templates->head->next->data)->ground.c_str);
@@ -1488,22 +1652,22 @@ typedef struct {
 
 // takes a string of args (`in`) and outputs an ordered & filtered list of arg `name` + `value` in a txt_template based on the template (`t`)
 int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_State* L) {
-    list* argsl = list_new();
+    list* argsl = list_new();//str_debug(in);
 
     int mode = 0;
     out->len = 0;
     ht_template_arg_value* arg = NULL;
-    wchar_t value_bounds = L'\0';
+    charw value_bounds = charl('\0');
     size_t last_ent = 0;
     int eq = 0;
     char value_mode = 0;    // 0: default, 1: ``, 2: {} /// unused????
     unsigned char neutral_mode; // bool: escaping in strlt or commenting in lua
     size_t nest = 0;
-    wchar_t lua_str_mode = L'\0';
+    charw lua_str_mode = charl('\0');
     for (size_t i = 0; i <= in.length; i++) {
         //printf("i: %zu\n", i);
-        wchar_t c = i < in.length ? in.c_str[i] : L'\0';
-        if (c >= L'a' && c <= L'z' || c >= L'A' && c <= L'Z' || c >= L'0' && c <= L'9' || c == L'_') {
+        charw c = i < in.length ? in.c_str[i] : charl('\0');
+        if (c >= charl('a') && c <= charl('z') || c >= charl('A') && c <= charl('Z') || c >= charl('0') && c <= charl('9') || c == charl('_')) {
             switch (mode) {
             case 0: // enter name mode
                 arg = (ht_template_arg_value*)malloc(sizeof(ht_template_arg_value));
@@ -1522,7 +1686,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 arg->value = nullstr;
                 //arg->value = str_cpy(!str_isnull(arg.default_value) ? arg.default_value)
                 //arg->value = str_new(2);
-                //str_append_ch(&arg->value, L'\b');
+                //str_append_ch(&arg->value, charl('\b'));
                 list_add(argsl, arg);
                 arg = (ht_template_arg_value*)malloc(sizeof(ht_template_arg_value));
                 arg->name = nullstr;
@@ -1534,7 +1698,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 mode = 1;
                 break;
             case 3: // enter value mode without quotes
-                value_bounds = L'\0';
+                value_bounds = charl('\0');
                 arg->value.c_str = in.c_str + i;
                 last_ent = i;
                 mode = 4;
@@ -1546,23 +1710,23 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                     } else {
                         switch (c)
                         {
-                        case L'n':
-                            str_append_ch(&arg->value, L'\n');
+                        case charl('n'):
+                            str_append_ch(&arg->value, charl('\n'));
                             break;
-                        case L't':
-                            str_append_ch(&arg->value, L'\t');
+                        case charl('t'):
+                            str_append_ch(&arg->value, charl('\t'));
                             break;
-                        case L'r':
-                            str_append_ch(&arg->value, L'\r');
+                        case charl('r'):
+                            str_append_ch(&arg->value, charl('\r'));
                             break;
-                        case L'v':
-                            str_append_ch(&arg->value, L'\v');
+                        case charl('v'):
+                            str_append_ch(&arg->value, charl('\v'));
                             break;
-                        case L'f':
-                            str_append_ch(&arg->value, L'\f');
+                        case charl('f'):
+                            str_append_ch(&arg->value, charl('\f'));
                             break;
-                        case L'a':
-                            str_append_ch(&arg->value, L'\a');
+                        case charl('a'):
+                            str_append_ch(&arg->value, charl('\a'));
                             break;
                         default:
                             str_append_ch(&arg->value, c);
@@ -1574,7 +1738,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 break;
             }
         } else switch (c) {
-        case L'[':
+        case charl('['):
             switch (mode) {
             case 0: // !
                 // TODO: throw exception
@@ -1589,24 +1753,24 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 throw_error("Unexpected character `[ in widget tag, arg name or `=` expected", E_EXIT);
                 break;
             case 3: // name=!
-                value_bounds = L'\0';
+                value_bounds = charl('\0');
                 arg->value.c_str = in.c_str + i;
                 last_ent = i;
                 mode = 4;
                 break;
             case 4: // name="!"
-                if (flag_includes(arg->flags, T_ARGV_VALUE) && !neutral_mode && !wcsncmp(in.c_str + i, L"[[", 2)) {
-                    if (lua_str_mode == L'\0') {
+                if (flag_includes(arg->flags, T_ARGV_VALUE) && !neutral_mode && !strncmpw(in.c_str + i, strl("[["), 2)) {
+                    if (lua_str_mode == charl('\0')) {
                         i++;
-                        lua_str_mode = L']';
+                        lua_str_mode = charl(']');
                     }
                 } else if (flag_includes(arg->flags, T_ARGV_STRLT)) {
-                    str_append_ch(&arg->value, L']');
+                    str_append_ch(&arg->value, charl('[')); // 2025-12-16
                 }
                 break;
             }
             break;
-        case L']':
+        case charl(']'):
             switch (mode) {
             case 0: // !
                 // TODO: throw exception
@@ -1621,7 +1785,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 throw_error("Unexpected character `]` in widget tag, arg name or `=` expected", E_EXIT);
                 break;
             case 3: // name=!
-                value_bounds = L'\0';
+                value_bounds = charl('\0');
                 arg->value.c_str = in.c_str + i;
                 last_ent = i;
                 mode = 4;
@@ -1630,21 +1794,21 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 if (neutral_mode == 3) {
                     neutral_mode = 0;
                     break;
-                } else if (flag_includes(arg->flags, T_ARGV_VALUE) && !wcsncmp(in.c_str + i, L"]]", 2)) {
+                } else if (flag_includes(arg->flags, T_ARGV_VALUE) && !strncmpw(in.c_str + i, strl("]]"), 2)) {
                     if (neutral_mode == 2) {
                         i++;
                         neutral_mode = 0;
-                    } else if (lua_str_mode == L']') {
+                    } else if (lua_str_mode == charl(']')) {
                         i++;
-                        lua_str_mode = L'\0';
+                        lua_str_mode = charl('\0');
                     }
                 } else if (flag_includes(arg->flags, T_ARGV_STRLT)) {
-                    str_append_ch(&arg->value, L']');
+                    str_append_ch(&arg->value, charl(']'));
                 }
                 break;
             }
             break;
-        case L'-':
+        case charl('-'):
             switch (mode) {
             case 0: // !
                 // TODO: throw exception
@@ -1659,30 +1823,30 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 throw_error("Unexpected character `-` in widget tag, arg name or `=` expected", E_EXIT);
                 break;
             case 3: // name=!
-                value_bounds = L'\0';
+                value_bounds = charl('\0');
                 arg->value.c_str = in.c_str + i;
                 last_ent = i;
                 mode = 4;
                 break;
             case 4: // name="!"
-                if (lua_str_mode != L'\0') {
+                if (lua_str_mode != charl('\0')) {
                     break;
                 }
-                if (flag_includes(arg->flags, T_ARGV_VALUE) && !neutral_mode && lua_str_mode == L'\0') {
-                    if (!wcsncmp(in.c_str + i, L"--[[", 4)) {
+                if (flag_includes(arg->flags, T_ARGV_VALUE) && !neutral_mode && lua_str_mode == charl('\0')) {
+                    if (!strncmpw(in.c_str + i, strl("--[["), 4)) {
                         neutral_mode = 2;
                         i += 3;
-                    } else if (!wcsncmp(in.c_str + i, L"--", 2)) {
+                    } else if (!strncmpw(in.c_str + i, strl("--"), 2)) {
                         neutral_mode = 1;
                         i++;
                     }
                 } else if (flag_includes(arg->flags, T_ARGV_STRLT)) {
-                    str_append_ch(&arg->value, L'-');
+                    str_append_ch(&arg->value, charl('-'));
                 }
                 break;
             }
             break;
-        case L'\\':
+        case charl('\\'):
             switch (mode) {
             case 0: // !
                 // TODO: throw exception
@@ -1697,7 +1861,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 throw_error("Unexpected character `\\` in widget tag, arg name or `=` expected", E_EXIT);
                 break;
             case 3: // name=!
-                value_bounds = L'\0';
+                value_bounds = charl('\0');
                 arg->value.c_str = in.c_str + i;
                 last_ent = i;
                 mode = 4;
@@ -1706,15 +1870,15 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 if (flag_includes(arg->flags, T_ARGV_STRLT)) {
                     neutral_mode = !neutral_mode;
                     if (!neutral_mode) {
-                        str_append_ch(&arg->value, L'\\');
+                        str_append_ch(&arg->value, charl('\\'));
                     }
-                } else if (flag_includes(arg->flags, T_ARGV_VALUE) && lua_str_mode != L'\0') {
+                } else if (flag_includes(arg->flags, T_ARGV_VALUE) && lua_str_mode != charl('\0')) {
                     neutral_mode = (!neutral_mode) * 3;
                 }
                 break;
             }
             break;
-        case L'}':
+        case charl('}'):
         switch (mode) {
             case 0: // "value"
                 // TODO: throw exception
@@ -1728,14 +1892,14 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 // TODO: throw exception
                 break;
             case 3: // enter value with quotes
-                value_bounds = L'\0';
+                value_bounds = charl('\0');
                 arg->value.c_str = in.c_str + i;
                 last_ent = i;
                 mode = 4;
                 break;
             case 4: // exit value with quotes?
                 //printf("%d, %d, %d\n", neutral_mode, lua_str_mode, nest);
-                if (c == value_bounds && !neutral_mode && lua_str_mode == L'\0') {
+                if (c == value_bounds && !neutral_mode && lua_str_mode == charl('\0')) {
                     if (!nest) {
                         value_mode = 0;
                         arg->value.length = i - last_ent - 1;
@@ -1745,13 +1909,13 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                         nest--;
                     }
                 } else if (flag_includes(arg->flags, T_ARGV_STRLT)) {
-                    str_append_ch(&arg->value, L'}');
+                    str_append_ch(&arg->value, charl('}'));
                     neutral_mode = 0;
                 }
                 break;
             }
             break;
-        case L'{':
+        case charl('{'):
             switch (mode) {
             case 0: // "value"
                 // TODO: throw exception
@@ -1765,7 +1929,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 // TODO: throw exception
                 break;
             case 3: // enter value with quotes
-                value_bounds = L'}';
+                value_bounds = charl('}');
                 value_mode = 2;
                 arg->flags |= T_ARGV_VALUE;
                 arg->value.c_str = in.c_str + i + 1;
@@ -1773,16 +1937,16 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 mode = 4;
                 break;
             case 4: // exit value with quotes?
-                if (flag_includes(arg->flags, T_ARGV_VALUE) && !neutral_mode && lua_str_mode == L'\0') {
+                if (flag_includes(arg->flags, T_ARGV_VALUE) && !neutral_mode && lua_str_mode == charl('\0')) {
                     nest++;
                 } else if (flag_includes(arg->flags, T_ARGV_STRLT)) {
-                    str_append_ch(&arg->value, L'{');
+                    str_append_ch(&arg->value, charl('{'));
                     neutral_mode = 0;
                 }
                 break;
             }
             break;
-        case L'`':
+        case charl('`'):
             switch (mode) {
             case 0: // "value"
                 // TODO: throw exception
@@ -1796,7 +1960,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 // TODO: throw exception
                 break;
             case 3: // enter value with quotes
-                value_bounds = L'`';
+                value_bounds = charl('`');
                 value_mode = 1;
                 arg->flags |= T_ARGV_STRLT;
                 arg->value = str_new(in.length - i);
@@ -1810,7 +1974,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                     list_add(argsl, arg);
                     mode = 0;
                 } else if (flag_includes(arg->flags, T_ARGV_STRLT)) {
-                    str_append_ch(&arg->value, L'`');
+                    str_append_ch(&arg->value, charl('`'));
                     neutral_mode = 0;
                 } else if (flag_includes(arg->flags, T_ARGV_VALUE) && neutral_mode == 3) {
                     neutral_mode = 0;
@@ -1818,8 +1982,8 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 break;
             }
             break; /// ^^^ NEW ^^^
-        case L'\'':
-        case L'"':
+        case charl('\''):
+        case charl('"'):
             switch (mode) {
             case 0: // "value"
                 // TODO: throw exception
@@ -1846,10 +2010,10 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 } else if (flag_includes(arg->flags, T_ARGV_STRLT)) {
                     str_append_ch(&arg->value, c);
                 } else if (flag_includes(arg->flags, T_ARGV_VALUE)) {
-                    if (lua_str_mode == L'\0' && !neutral_mode) {
+                    if (lua_str_mode == charl('\0') && !neutral_mode) {
                         lua_str_mode = c;
                     } else if (lua_str_mode == c && neutral_mode != 3) {
-                        lua_str_mode = L'\0';
+                        lua_str_mode = charl('\0');
                     } else if (neutral_mode == 3) {
                         neutral_mode = 0;
                     }
@@ -1857,10 +2021,10 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 break;
             }
             break;
-        case L' ':
-        case L'\t':
-        case L'\n':
-        case L'\r':
+        case charl(' '):
+        case charl('\t'):
+        case charl('\n'):
+        case charl('\r'):
             switch (mode) {
             case 0:
                 break;
@@ -1875,15 +2039,15 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 
                 break;
             case 4:
-                if (value_bounds == L'\0') { // exit value without quotes
+                if (value_bounds == charl('\0')) { // exit value without quotes
                     arg->value.length = i - last_ent;
                     list_add(argsl, arg);
                     mode = 0;
                 } else if (flag_includes(arg->flags, T_ARGV_VALUE)) { // exit single line lua comment mode
-                    if (neutral_mode == 1 && c == L'\n') {
+                    if (neutral_mode == 1 && c == charl('\n')) {
                         neutral_mode = 0;
-                    } else if ((lua_str_mode == L'"' || lua_str_mode == L'\'') && c == L'\n') {
-                        lua_str_mode = L'\0';
+                    } else if ((lua_str_mode == charl('"') || lua_str_mode == charl('\'')) && c == charl('\n')) {
+                        lua_str_mode = charl('\0');
                     } else if (neutral_mode == 3) {
                         neutral_mode = 0;
                     }
@@ -1894,7 +2058,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 break;
             }
             break;
-        case L'=':
+        case charl('='):
             switch (mode) {
             case 0: // =
                 // TODO: throw exception
@@ -1912,8 +2076,8 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 throw_error("Unexpected symbol '=' in widget tag", E_EXIT);
                 break;
             case 4: // name="=" or // name= =
-                //if (c != L'\0') {
-                if (value_bounds != L'\0') {
+                //if (c != charl('\0')) {
+                if (value_bounds != charl('\0')) {
                     /*arg->value.length = i - last_ent;
                     list_add(argsl, arg);
                     mode = 0;*/
@@ -1922,7 +2086,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                     }
                     break;
                 } else if (flag_includes(arg->flags, T_ARGV_STRLT)/* && !neutral_mode*/) {
-                    str_append_ch(&arg->value, L'=');
+                    str_append_ch(&arg->value, charl('='));
                     neutral_mode = 0;
                 } else {
                     // TODO: throw exception
@@ -1931,7 +2095,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 break;
             }
             break;
-        case L'\0':
+        case charl('\0'):
             switch (mode) {
             case 0:
                 break;
@@ -1950,12 +2114,12 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
             case 3: // ignore
                 break;
             case 4: // exit value without quotes
-                if (value_bounds == L'\0') {
+                if (value_bounds == charl('\0')) {
                     arg->value.length = i - last_ent;
                     list_add(argsl, arg);
                     mode = 0;
                 } else if (flag_includes(arg->flags, T_ARGV_STRLT)/* && !neutral_mode*/) {
-                    str_append_ch(&arg->value, L'\0');
+                    str_append_ch(&arg->value, charl('\0'));
                     neutral_mode = 0;
                 }
                 break;
@@ -1977,7 +2141,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 throw_error("Unexpected symbol in widget tag, arg name or `=` expected", E_EXIT);
                 break;
             case 3: // name=!
-                value_bounds = L'\0';
+                value_bounds = charl('\0');
                 arg->value.c_str = in.c_str + i;
                 last_ent = i;
                 mode = 4;
@@ -2012,16 +2176,16 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
         for (size_t j = 0; j < argsl->size; j++) {
             ht_template_arg_value* o = (ht_template_arg_value*)ln->data;
 
-            if (!wcsncmp(VECT_A(ht_template_arg, a)[i].name.c_str, o->name.c_str, o->name.length)) {
+            if (!strncmpw(VECT_A(ht_template_arg, a)[i].name.c_str, o->name.c_str, o->name.length)) {
                 found = 1;
                 if (str_isnull(o->value)) {
                     o->value = VECT_A(ht_template_arg, a)[i].default_value;
                 } else if (flag_includes(o->flags, T_ARGV_VALUE)) {
                     //o->value = str_new(2);
-                    //str_append_ch(&o->value, L'\r');
+                    //str_append_ch(&o->value, charl('\r'));
                     //string wlin = str_cpy(o->value);
                     string wlin = str_new(o->value.length + 2);
-                    str_append_ch(&wlin, L'\r');
+                    str_append_ch(&wlin, charl('\r'));
                     str_append(&wlin, o->value.c_str, o->value.length);
                     o->value = wlin;
                     //printf("{%ls}\n", o->value.c_str + 1);
@@ -2042,7 +2206,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                     lin[13] = 'n';
                     lin[14] = 'g';
                     lin[15] = '(';
-                    wcstombs(lin + 16, wlin.c_str, wlin.length);
+                    wcstombsw(lin + 16, wlin.c_str, wlin.length);
                     lin[wlin.length + 16] = ')';
                     lin[wlin.length + 17] = '\0';
                     int r = luaL_loadstring(L, lin);
@@ -2052,7 +2216,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                             size_t lout_len = strlen(lout);
                             string wlout = str_new(lout_len + 1);
                             mbstowcs(wlout.c_str, lout, lout_len);
-                            wlout.c_str[lout_len] = L'\0';
+                            wlout.c_str[lout_len] = charl('\0');
                             wlout.length = lout_len;
                             free(lin);
                             //free(o->data);
@@ -2088,7 +2252,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                     o->name = str_cpy(arg.name); // ??? str_cpy?
                     //o->value = nullstr;
                     string v = str_new(2);
-                    str_append_ch(&v, L'\b');
+                    str_append_ch(&v, charl('\b'));
                     o->value = v;
                     out->len += o->value.length + 1;
                     //puts(VECT_A(ht_template_arg, a)[i].name.c_str);
@@ -2110,7 +2274,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 o->name = str_cpy(arg.name); // ??? str_cpy?
                 //o->value = nullstr;
                 string v = str_new(2);
-                str_append_ch(&v, L'\b');
+                str_append_ch(&v, charl('\b'));
                 o->value = v;
                 out->len += o->value.length + 1;
                 //puts(VECT_A(ht_template_arg, a)[i].name.c_str);
@@ -2119,7 +2283,14 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
                 continue;
             }
 
-            throw_error("Widget argument(s) missing", E_EXIT);
+            //throw_error("Widget argument(s) missing", E_EXIT);
+            char e_msg[1024];
+            #if WCHAR_ENABLED
+            snprintf(e_msg, 255, "Required widget argument \"%ls\" in tag \"%ls\" is missing", VECT_A(ht_template_arg, a)[i].name.c_str, t->name.c_str);
+            #else
+            snprintf(e_msg, 255, "Required widget argument \"%s\" in tag \"%s\" is missing", VECT_A(ht_template_arg, a)[i].name.c_str, t->name.c_str);
+            #endif
+            throw_error(e_msg, E_EXIT);
             ln = argsl->head;
             for (size_t j = 0; j < argsl->size; j++) {
                 ht_template_arg_value* o = (ht_template_arg_value*)ln->data;
@@ -2144,11 +2315,14 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, lua_S
         puts("-----");
     }*/
 
-    list_node* ln = argsl->head;
+    list_node* ln = argsl->head;//puts("eee");
     for (size_t i = 0; i < argsl->size; i++) {
         ht_template_arg_value* o = (ht_template_arg_value*)ln->data;
-        free(o);
-    }
+#if DEBUG_MODE == 1
+        printf("[%zu]\t", i);
+#endif
+        //free(o); // FIXME: this free wasn't commented out, but for some reason it causes "free(): double free detected in tcache 2\nAborted"
+    }//puts("eeeeeeeeee");
     out->txts = args;
     //*out = args;
     return 1;
@@ -2175,7 +2349,7 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
     int php_mode = 0;
     size_t last_idx = 0;
 
-    wchar_t c;
+    charw c;
 
     size_t args_count = 0;
     size_t args_block_size = 0;
@@ -2183,52 +2357,52 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
     size_t difference = 0;
 
     //string name = str_new(128);
-    for (size_t idx = 0; (c = in.c_str[idx]) != L'\0'; idx++) {
+    for (size_t idx = 0; (c = in.c_str[idx]) != charl('\0'); idx++) {
         //putwc(c, stdout);
-        /*if (in.c_str[idx + 1] == L'\0') {
+        /*if (in.c_str[idx + 1] == charl('\0')) {
             //last_idx = idx;
             //printf("gwa gwa 1\n");
             //str_append(&ground, in.c_str + last_idx, idx - last_idx - 1);
             //printf("gwa gwa 2\n");
             //str_append_ch(&ground, c);
         } */if (comment_mode) {
-            if (c == L'-') {
-                if (!wcsncmp(in.c_str + idx, L"-->", 3)) {
+            if (c == charl('-')) {
+                if (!strncmpw(in.c_str + idx, strl("-->"), 3)) {
                     comment_mode = 0;
                     idx += 2;
                 } else continue;
             } else continue;
         }
         if (php_mode) {
-            if (c == L'?') {
-                if (!wcsncmp(in.c_str + idx, L"?>", 2)) {
+            if (c == charl('?')) {
+                if (!strncmpw(in.c_str + idx, strl("?>"), 2)) {
                     php_mode = 0;
                     idx += 1;
                 } else continue;
             } else continue;
         }
 
-        if (c == L'<') {
+        if (c == charl('<')) {
             //in.c_str + idx + 1;
 
             // force native tags
             //printf("ctx.flags: %d\n", ctx.flags);
             //printf("idx: %zu\n", idx);
-            /*if (in.c_str[idx + 1] == L'#') {
+            /*if (in.c_str[idx + 1] == charl('#')) {
                 if (flag_includes(ctx.flags, CTX_HEAD)) {
-                    str_append_ch(&ground, L'<');
+                    str_append_ch(&ground, charl('<'));
                     idx++;
                     continue;
                 } else puts("n");
-            } else if (in.c_str[idx + 1] == L'/' && in.c_str[idx + 2] == L'#') {
+            } else if (in.c_str[idx + 1] == charl('/') && in.c_str[idx + 2] == charl('#')) {
                 if (flag_includes(ctx.flags, CTX_HEAD)) {
-                    str_append_ch(&ground, L'<');
-                    str_append_ch(&ground, L'/');
+                    str_append_ch(&ground, charl('<'));
+                    str_append_ch(&ground, charl('/'));
                     idx += 2;
                     continue;
                 } else puts("n");
             }*/
-            wchar_t c;
+            charw c;
             size_t i;
 
             //int naming = 1;
@@ -2241,21 +2415,21 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
             string* inner = (string*)malloc(sizeof(string));
             *inner = nullstr;
             int in_args = 0;
-            for (i = 0; (c = in.c_str[idx + 1 + i]) != L'\0'; i++) {
+            for (i = 0; (c = in.c_str[idx + 1 + i]) != charl('\0'); i++) {
                 //printf("__[%zu] => %lc\n", idx + i, c);
-                if (c >= L'a' && c <= L'z' || c >= L'A' && c <= L'Z' || c >= L'0' && c <= L'9' || c == L'_'/* || c == L'-'*/) {
+                if (c >= charl('a') && c <= charl('z') || c >= charl('A') && c <= charl('Z') || c >= charl('0') && c <= charl('9') || c == charl('_')/* || c == charl('-')*/) {
 #if DEBUG_MODE
-                    /*if (!wcsncmp(in.c_str + idx + 1, L"metas", 5)) {
+                    /*if (!strncmpw(in.c_str + idx + 1, strl("metas"), 5)) {
                         printf("i: %zu\n", i);
                         puts("metafound!");
                     }*/
 #endif
                     continue;
-                } else if (c == L' ' || c == L'\n' || c == L'\t' || c == L'\r') {
+                } else if (c == charl(' ') || c == charl('\n') || c == charl('\t') || c == charl('\r')) {
 #if DEBUG_MODE
                     /*putc('.', stdout);
                         printf("i: %zu\n", i);
-                    if (!wcsncmp(in.c_str + idx + 1, L"metas", 5)) {
+                    if (!strncmpw(in.c_str + idx + 1, strl("metas"), 5)) {
                         puts("post-metafound!");
                     }*/
 #endif
@@ -2274,12 +2448,12 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                             //printf("\"%ls\"\n", name_buffer.c_str);
                             //printf("\"%ls\"\n\n", in.c_str + idx + 1);
                             //printf("nl: %zu\tns: %zu\n", name_buffer.length, name_buffer.size);
-                            /*//if (!wcsncmp(name_buffer.c_str, L"metas", 5)) {
+                            /*//if (!strncmpw(name_buffer.c_str, strl("metas"), 5)) {
                                 string _tmp_name = str_cpy(name_buffer);
                                 printf("i: %zu\tlen: %zu\tnb: \"%ls\"\t\ttb: \"%ls\"\n", i, tt->name.length, _tmp_name.c_str, tt->name.c_str);
                             //}*/
 #endif
-                            if (i == tt->name.length && !wcsncmp(name_buffer.c_str, tt->name.c_str, i)) {
+                            if (i == tt->name.length && !strncmpw(name_buffer.c_str, tt->name.c_str, i)) {
                                 t = tt;
                                 in_args = 1;
                                 field_location* fl = (field_location*)malloc(sizeof(field_location));
@@ -2304,9 +2478,9 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                             }
                         }
                     }
-                } else if (c == L'/') {
+                } else if (c == charl('/')) {
                     //putc(':', stdout);
-                    if (in.c_str[idx + 2 + i] != L'>') break;
+                    if (in.c_str[idx + 2 + i] != charl('>')) break;
                     ninner = 1;
                     dninner = 1;
                     if (!i) {
@@ -2321,7 +2495,7 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                         size_t j;
                         for (j = 0; j < ctx.templates->size; j++) {
                             ht_template* tt = (ht_template*)mnt->data;
-                            if (i/* - 1*/ == tt->name.length && !wcsncmp(name_buffer.c_str, tt->name.c_str, i/* - 1*/)) {
+                            if (i/* - 1*/ == tt->name.length && !strncmpw(name_buffer.c_str, tt->name.c_str, i/* - 1*/)) {
                                 t = tt;
                                 field_location* fl = (field_location*)malloc(sizeof(field_location));
                                 fl->pos = idx - difference;
@@ -2338,7 +2512,7 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                         }
                         break;
                     }
-                } else if (c == L'>') {
+                } else if (c == charl('>')) {
                     //putc(';', stdout);
                     name_buffer = (string){
                         .c_str = in.c_str + idx + 1,
@@ -2348,13 +2522,13 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                     u_map_node* mnt = (u_map_node*)ctx.templates->head;
                     size_t j;
 #if DEBUG_MODE
-                    if (!wcsncmp(name_buffer.c_str, L"test", 4)) {
+                    if (!strncmpw(name_buffer.c_str, strl("test"), 4)) {
                         puts("__test__");
                     }
 #endif
                     for (j = 0; j < ctx.templates->size; j++) {
                         ht_template* tt = (ht_template*)mnt->data;
-                        if (i/* - 1*/ == tt->name.length && !wcsncmp(name_buffer.c_str, tt->name.c_str, i/* - 1*/)) {
+                        if (i/* - 1*/ == tt->name.length && !strncmpw(name_buffer.c_str, tt->name.c_str, i/* - 1*/)) {
                             t = tt;
                             if (t != NULL) {
                                 field_location* fl = (field_location*)malloc(sizeof(field_location));
@@ -2389,48 +2563,48 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
         widget_name_to_arg_parse:;
             if (/*!in_args && */t == NULL) {
                 // in case tag is not a widget
-                str_append_ch(&ground, L'<');
+                str_append_ch(&ground, charl('<'));
                 continue;
             }
             args_buffer.c_str = in.c_str + idx + 1 + i;
             size_t b = i;
-            wchar_t str_bounds = L'\0';
+            charw str_bounds = charl('\0');
             size_t nest = 0;
-            wchar_t lua_str_mode = L'\0';
+            charw lua_str_mode = charl('\0');
             unsigned char neutral_mode = 0;
-            for (; (c = in.c_str[idx + 1 + i]) != L'\0'; i++) {
+            for (; (c = in.c_str[idx + 1 + i]) != charl('\0'); i++) {
                 switch (c) {
-                case L'[':
-                    if (str_bounds == L'}' && !wcsncmp(in.c_str + idx + 1 + i, L"[[", 2)) {
-                        if (lua_str_mode == L'\0') {
-                            lua_str_mode = L']';
+                case charl('['):
+                    if (str_bounds == charl('}') && !strncmpw(in.c_str + idx + 1 + i, strl("[["), 2)) {
+                        if (lua_str_mode == charl('\0')) {
+                            lua_str_mode = charl(']');
                             i++;
                         }
                     } else if (neutral_mode == 3) {
                         neutral_mode = 0;
                     }
                     break;
-                case L']':
-                    if (str_bounds == L'}' && !wcsncmp(in.c_str + idx + 1 + i, L"]]", 2)) {
+                case charl(']'):
+                    if (str_bounds == charl('}') && !strncmpw(in.c_str + idx + 1 + i, strl("]]"), 2)) {
                         if (neutral_mode == 2) {
                             neutral_mode = 0;
                             i++;
-                        } else if (lua_str_mode == L']' && !neutral_mode) {
-                            lua_str_mode = L'\0';
+                        } else if (lua_str_mode == charl(']') && !neutral_mode) {
+                            lua_str_mode = charl('\0');
                             i++;
                         }
                     } else if (neutral_mode == 3) {
                         neutral_mode = 0;
                     }
                     break;
-                case L'-':
-                    if (str_bounds == L'`' && neutral_mode) {
+                case charl('-'):
+                    if (str_bounds == charl('`') && neutral_mode) {
                         neutral_mode = 0;
-                    } else if (str_bounds == L'}' && neutral_mode == 0) {
-                        if (!wcsncmp(in.c_str + idx + 1 + i, L"--[[", 4)) {
+                    } else if (str_bounds == charl('}') && neutral_mode == 0) {
+                        if (!strncmpw(in.c_str + idx + 1 + i, strl("--[["), 4)) {
                             neutral_mode = 2;
                             i += 3;
-                        } else if (!wcsncmp(in.c_str + idx + 1 + i, L"--", 2)) {
+                        } else if (!strncmpw(in.c_str + idx + 1 + i, strl("--"), 2)) {
                             neutral_mode = 1;
                             i++;
                         }
@@ -2438,60 +2612,60 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                         neutral_mode = 0;
                     }
                     break;
-                case L'\\':
-                    if (str_bounds == L'`') {
+                case charl('\\'):
+                    if (str_bounds == charl('`')) {
                         neutral_mode = !neutral_mode;
-                    } else if (lua_str_mode != L'\0' && neutral_mode == 0 || neutral_mode == 3) {
+                    } else if (lua_str_mode != charl('\0') && neutral_mode == 0 || neutral_mode == 3) {
                         neutral_mode = (!neutral_mode) * 3;
                     }
                     break;
-                case L'}':
-                    if (str_bounds == L'`' && neutral_mode) {
+                case charl('}'):
+                    if (str_bounds == charl('`') && neutral_mode) {
                         neutral_mode = 0;
                         break;
                     }
-                    if (str_bounds != L'}') {
+                    if (str_bounds != charl('}')) {
                         break;
                     }
-                    if (!neutral_mode && lua_str_mode == L'\0') {
+                    if (!neutral_mode && lua_str_mode == charl('\0')) {
                         if (nest > 0) {
                             nest--;
                         } else {
-                            str_bounds = L'\0';
+                            str_bounds = charl('\0');
                         }
                     } else if (neutral_mode == 3) {
                         neutral_mode = 0;
                     }
                     break;
-                case L'{':
-                    if (str_bounds == L'`' && neutral_mode) {
+                case charl('{'):
+                    if (str_bounds == charl('`') && neutral_mode) {
                         neutral_mode = 0;
                         break;
                     }
-                    if (str_bounds == L'\0') {
-                        str_bounds = L'}';
+                    if (str_bounds == charl('\0')) {
+                        str_bounds = charl('}');
                         break;
                     }
-                    if (str_bounds != L'}') {
+                    if (str_bounds != charl('}')) {
                         break;
                     }
-                    if (!neutral_mode && lua_str_mode == L'\0') {
+                    if (!neutral_mode && lua_str_mode == charl('\0')) {
                         nest++;
                     } else if (neutral_mode == 3) {
                         neutral_mode = 0;
                     }
                     break;
-                case L'`': // NEW
-                case L'\'':
-                case L'"':
-                    if (str_bounds == L'`' && neutral_mode) {
+                case charl('`'): // NEW
+                case charl('\''):
+                case charl('"'):
+                    if (str_bounds == charl('`') && neutral_mode) {
                         neutral_mode = 0;
                         break;
-                    } else if (str_bounds == L'}' && !neutral_mode && c != L'`') {
-                        //lua_str_mode = lua_str_mode == c ? L'\0' : c;
+                    } else if (str_bounds == charl('}') && !neutral_mode && c != charl('`')) {
+                        //lua_str_mode = lua_str_mode == c ? charl('\0') : c;
                         if (lua_str_mode == c) {
-                            lua_str_mode = L'\0';
-                        } else if (lua_str_mode == L'\0') {
+                            lua_str_mode = charl('\0');
+                        } else if (lua_str_mode == charl('\0')) {
                             lua_str_mode = c;
                         }
                         break;
@@ -2499,27 +2673,27 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                         neutral_mode = 0;
                     }
                     if (c == str_bounds) {
-                        str_bounds = L'\0';
-                    } else if (str_bounds == L'\0') {
+                        str_bounds = charl('\0');
+                    } else if (str_bounds == charl('\0')) {
                         str_bounds = c;
                     }
                     break;
-                case L'/':
-                    if (str_bounds == L'`' && neutral_mode) {
+                case charl('/'):
+                    if (str_bounds == charl('`') && neutral_mode) {
                         neutral_mode = 0;
                         break;
                     }
-                    if (str_bounds == L'\0') {
+                    if (str_bounds == charl('\0')) {
                         dninner = 1;
                         goto widget_arg_parse_to_arg_process;
                     }
                     break;
-                case L'>':
-                    if (str_bounds == L'`' && neutral_mode) {
+                case charl('>'):
+                    if (str_bounds == charl('`') && neutral_mode) {
                         neutral_mode = 0;
                         break;
                     }
-                    if (str_bounds == L'\0') {
+                    if (str_bounds == charl('\0')) {
                         if (!ninner) {
                             inner->c_str = in.c_str + idx + 2 + i;
                         }
@@ -2529,19 +2703,22 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                     }
                     break;
                 case '\n':
-                    if (str_bounds == L'`' && neutral_mode == 1) {
+                    if (str_bounds == charl('`') && neutral_mode == 1) {
                         neutral_mode = 0;
-                    } else if (str_bounds == L'}' && neutral_mode == 1) {
+                    } else if (str_bounds == charl('}') && neutral_mode == 1) {
                         neutral_mode = 0;
                     } else if (neutral_mode == 3) {
                         neutral_mode = 0;
-                    } else if (lua_str_mode == L'"' || lua_str_mode == L'\'') {
-                        lua_str_mode = L'\0';
+                    } else if (lua_str_mode == charl('"') || lua_str_mode == charl('\'')) {
+                        lua_str_mode = charl('\0');
                     }
                     break;
                 default:
                     if (neutral_mode == 3) {
                         neutral_mode = 0;
+                    } else if (str_bounds == charl('`') && neutral_mode) {
+                        neutral_mode = 0;
+                        break;
                     }
                     break;
                 }
@@ -2567,8 +2744,8 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                 inners_block_size++;
                 list_add(inners_list, inner);
                 /*size_t d = 0;
-                wchar_t c;
-                //wchar_t 
+                charw c;
+                //charw 
                 for (size_t i = 0; i < in.length; i++) {
 
                 }*/
@@ -2579,12 +2756,12 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
             }
             b = i;
             size_t nt_count = 0;
-            for (; (c = in.c_str[idx + 1 + i]) != L'\0'; i++) {
-                if (c == L'<') {
-                    if (in.c_str[idx + i + 2] == L'/') {
-                        wchar_t after = in.c_str[idx + 3 + i + t->name.length];
-                        if (!wcsncmp(in.c_str + idx + 3 + i, t->name.c_str, t->name.length)) {
-                            if (after == L'>') {
+            for (; (c = in.c_str[idx + 1 + i]) != charl('\0'); i++) {
+                if (c == charl('<')) {
+                    if (in.c_str[idx + i + 2] == charl('/')) {
+                        charw after = in.c_str[idx + 3 + i + t->name.length];
+                        if (!strncmpw(in.c_str + idx + 3 + i, t->name.c_str, t->name.length)) {
+                            if (after == charl('>')) {
                                 if (nt_count)
                                     nt_count--;
                                 else {
@@ -2593,10 +2770,10 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                                     difference += 3 + i + 1 + t->name.length;
                                     break;
                                 }
-                            } else if (after == L' ' || after == L'\n' || after == L'\t' || after == L'\r') {
-                                wchar_t c;
-                                for (size_t j = 0; (c = in.c_str[idx + 3 + i + t->name.length + j]) != L'\0'; j++) {
-                                    if (c == L'>') {
+                            } else if (after == charl(' ') || after == charl('\n') || after == charl('\t') || after == charl('\r')) {
+                                charw c;
+                                for (size_t j = 0; (c = in.c_str[idx + 3 + i + t->name.length + j]) != charl('\0'); j++) {
+                                    if (c == charl('>')) {
                                         if (nt_count)
                                             nt_count--;
                                         else {
@@ -2609,15 +2786,15 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                                 }
                             }
                         }
-                    } else if (!wcsncmp(in.c_str + idx + 2 + i, t->name.c_str, t->name.length)) {
-                        wchar_t after = in.c_str[idx + 2 + i + t->name.length];
-                        if (after == L'/') {
+                    } else if (!strncmpw(in.c_str + idx + 2 + i, t->name.c_str, t->name.length)) {
+                        charw after = in.c_str[idx + 2 + i + t->name.length];
+                        if (after == charl('/')) {
                             //nt_count++;
-                        } else if (after == L' ' || after == L'\n' || after == L'\t' || after == L'>' || after == L'\r') {
+                        } else if (after == charl(' ') || after == charl('\n') || after == charl('\t') || after == charl('>') || after == charl('\r')) {
                             //int is_ninner = 0;
                             int is_ninner = t->ninner;
-                            for (size_t j = 0; (c = in.c_str[idx + 1 + i + j]) != L'>'; j++) {
-                                if (c == L'/') {
+                            for (size_t j = 0; (c = in.c_str[idx + 1 + i + j]) != charl('>'); j++) {
+                                if (c == charl('/')) {
                                     is_ninner = 1;
                                     break;
                                 }
@@ -2648,8 +2825,8 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
 
     // pack all the info
     out.ground = ground;
-    out.args = (wchar_t*)malloc(args_block_size * sizeof(wchar_t));
-    out.inners = (wchar_t*)malloc(inners_block_size * sizeof(wchar_t));
+    out.args = (charw*)malloc(args_block_size * sizeof(charw));
+    out.inners = (charw*)malloc(inners_block_size * sizeof(charw));
     out.arg_shifts = (size_t*)malloc(args_count * sizeof(size_t));
     out.inner_shifts = (size_t*)malloc(inners_list->size * sizeof(size_t));
     out.fields = (field_location*)malloc(fields_list->size * sizeof(field_location));
@@ -2673,7 +2850,7 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
                     for (size_t i = 0; i < s.length; i++) {
                         out.args[s_idx++] = s.c_str[i];
                     }
-                    out.args[s_idx++] = L'\0';
+                    out.args[s_idx++] = charl('\0');
                     out.arg_shifts[s_shifs_idx++] = s_idx;
                     ln = ln->next;
                     if (flag_includes(o->flags, T_ARGV_STRLT) || flag_includes(o->flags, T_ARGV_VALUE)) {
@@ -2698,7 +2875,7 @@ txt_template_fill_data htmw_process_txt(htmw_context ctx) {
             for (size_t i = 0; i < s->length; i++) {
                 out.inners[s_idx++] = s->c_str[i];
             }
-            out.inners[s_idx++] = L'\0';
+            out.inners[s_idx++] = charl('\0');
             out.inner_shifts[s_shifs_idx++] = s_idx;
             ln = ln->next;
             free(s);
@@ -2741,7 +2918,7 @@ string htmw_compile_txt(htmw_context ctx, txt_template_fill_data* tf) {
         ht_template* t = templates[fl.idx];
         size_t template_args_count = t->args->size;
         //string* args = (string*)malloc(template_args_count * sizeof(string)); // using string struct
-        wchar_t** args = (wchar_t**)malloc(template_args_count * sizeof(wchar_t*)); // using string struct
+        charw** args = (charw**)malloc(template_args_count * sizeof(charw*)); // using string struct
         for (size_t j = 0; j < template_args_count; j++) {
             //printf("->%ls\n", tf->args + (idx ? tf->arg_shifts[idx - 1] : 0));
             size_t arg_shift = idx ? tf->arg_shifts[idx - 1] : 0;
@@ -2774,15 +2951,15 @@ string htmw_compile_txt(htmw_context ctx, txt_template_fill_data* tf) {
             //printf(">%zu => %zu {%ls}\n", list_shift, fills[list_shift].length, fills[list_shift].c_str);
             //str_debug(fills[list_shift]);
             for (size_t j = 0; j < fills[list_shift].length; j++) {
-                wchar_t c = fills[list_shift].c_str[j];
-                if (c != L'\0')
+                charw c = fills[list_shift].c_str[j];
+                if (c != charl('\0'))
                     str_append_ch(&out, c);
             }
             list_shift++;
             i--;
         } else {
-            wchar_t c = tf->ground.c_str[i];
-            if (c != L'\0')
+            charw c = tf->ground.c_str[i];
+            if (c != charl('\0'))
                 str_append_ch(&out, c);
         }
     }
@@ -2793,12 +2970,12 @@ string htmw_compile_txt(htmw_context ctx, txt_template_fill_data* tf) {
 string htmw_postprocess(string s) {
     string out = str_new(s.length + 1);
     for (size_t i = 0; i < s.length; i++) {
-        if (s.c_str[i + 1] == L'#') {
-            str_append_ch(&out, L'<');
+        if (s.c_str[i] == charl('<') && s.c_str[i + 1] == charl('#')) {
+            str_append_ch(&out, charl('<'));
             i++;
-        } else if (s.c_str[i + 1] == L'/' && s.c_str[i + 2] == L'#') {
-            str_append_ch(&out, L'<');
-            str_append_ch(&out, L'/');
+        } else if (s.c_str[i] == charl('<') && s.c_str[i + 1] == charl('/') && s.c_str[i + 2] == charl('#')) {
+            str_append_ch(&out, charl('<'));
+            str_append_ch(&out, charl('/'));
             i += 2;
         } else {
             str_append_ch(&out, s.c_str[i]);
@@ -2807,12 +2984,44 @@ string htmw_postprocess(string s) {
     return out;
 }
 
+// parses the include path from the command line argument (`-I` exluded)
+/*void arg_add_include_path(const char *s) {
+    /*char value_bounds = '\0';
+    size_t idx = 0;
+    if (s[0] == '"' || s[0] == '\'')
+        value_bounds = s[idx++];*
+    // apparently stringed values are automatically handled by the system even if it starts with a character
+
+    list_add
+
+    printf("global include path val: |%s|\n", s);
+}*/
+
+void htmw_remove_unsafe(lua_State* L) {
+    lua_pushnil(L);
+    lua_setglobal(L, "os");
+    lua_pushnil(L);
+    lua_setglobal(L, "io");
+    lua_pushnil(L);
+    lua_setglobal(L, "require");
+    lua_pushnil(L);
+    lua_setglobal(L, "dofile");
+    lua_pushnil(L);
+    lua_setglobal(L, "loadfile");
+    lua_pushnil(L);
+    lua_setglobal(L, "package");
+}
+
 typedef struct {
     char* origin_name;
     char* output_name;      // NULL if not recursive
     char* format;           // NULL if auto
     int replica_mode;       // boolean: if true a deep copy of all the files in the folder will be performed
+    int enable_network;     // boolean: if true allows HTTP includes
+    int unsafe_mode;        // boolean: if enable_network is true but unsafe_mode is false, unsafe lua libraries will be removed
 } config_t;
+
+// starting point
 
 int main(int argc, char** argv) {
     //setlocale(LC_ALL, "");
@@ -2827,10 +3036,19 @@ int main(int argc, char** argv) {
         .origin_name = NULL,
         .output_name = NULL,
         .format = NULL,
-        .replica_mode = 0
+        .replica_mode = 0,
+        .enable_network = 0,
+        .unsafe_mode = 0
     };
 
-    int show_ver = 0;
+    int show_ver = 0;   // flag: show version if 1
+
+    list* global_include_paths = list_new();
+
+#ifdef __unix__
+    string global_include_buffer = str_from(GLOBAL_INCLUDE_PATH);
+    list_insert(global_include_paths, 0, (void*)&global_include_buffer);
+#endif
 
     for (int i = 1; i < argc; i++) {
         //printf("%d\t\"%s\"\n", i, argv[i]);
@@ -2866,6 +3084,8 @@ int main(int argc, char** argv) {
                         throw_error("Output mode config error", E_EXIT);
                     }
                     config.output_name = argv[++i];
+                } else if (!strcmp(argv[i] + 2, "unsafe")) {
+                    config.unsafe_mode = 1;
                 }
                 break;
             case 'f':
@@ -2891,8 +3111,16 @@ int main(int argc, char** argv) {
                 config.output_name = argv[++i];
                 break;
             case 'v':
-                printf("HTMW vT.5\nWoxell\n\n");
+                printf("HTMW vT.6\nWoxell\n\n");
                 show_ver = 1;
+                break;
+            case 'I': {
+                    string *s = (string*)malloc(sizeof(string));
+                    *s = str_from(argv[i] + 2);
+                    list_insert(global_include_paths, 0, (void*)s);
+                } break;
+            case 'N':
+                config.enable_network = 1;
                 break;
             default:
                 break;
@@ -2921,10 +3149,17 @@ int main(int argc, char** argv) {
     lua_State* L = luaL_newstate();
     luaL_openlibs(L);
 
-    htmw_context ctx = htmw_preprocess(L, in, NULL);
+    if (config.enable_network && !config.unsafe_mode) {
+        htmw_remove_unsafe(L);
+        printf("[HTMW Warning]: Some features have been disabled to prevent unsafe execution from HTTP sources, use the `--unsafe` flag to enable all the features\n");
+    }
+
+    htmw_context ctx = htmw_preprocess(L, in, NULL, global_include_paths, config.enable_network);
     stack* ctx_stack = stack_new();
 
     stack_push(ctx_stack, (void*)&ctx);
+
+    //ctx.global_paths = global_include_paths;
 
     txt_template_fill_data tfd = htmw_process_txt(ctx);
     //str_debug(tfd.ground);
@@ -2938,7 +3173,11 @@ int main(int argc, char** argv) {
     //printf("%ls\n", o.c_str);
     lua_close(L);
     FILE* out_stream = fopen(out_name, "w");
+#if WCHAR_ENABLED
     fprintf(out_stream, "%ls", out.c_str);
+#else
+    fprintf(out_stream, "%s", out.c_str);
+#endif
     fclose(out_stream);
     free(in_name);
     free(out_name);

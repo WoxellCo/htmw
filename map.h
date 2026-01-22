@@ -16,7 +16,9 @@ extern "C" {
 
 #define MAP_NPOS SIZE_MAX
 
-typedef wchar_t mapt_t;
+#include "str.h"
+
+typedef charw mapt_t;
 //typedef struct {} u_map;
 typedef struct m_node
 {

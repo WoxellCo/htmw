@@ -42,14 +42,17 @@ list_node *lnode_getat(list_node *ln, size_t i)
 	//printf("Searching on node %lu\n", i);
 	if(i > 0)
 	{
+		//puts("a");
 		return lnode_getat(ln->next, i - 1);
 	}
 	else if(i == 0)
 	{
+		//puts("b");
 		return ln;
 	}
 	else
 	{
+		//puts("c");
 		return NULL;
 	}
 }
@@ -161,7 +164,10 @@ void list_insert(list *l, size_t i, void *data)
 	list_node *newn = (list_node*) malloc(sizeof(list_node));
 	newn->data = data;
 	newn->next = lnode_getat(l->head, i);
-	lnode_getat(l->head, i - 1)->next = newn;
+	if (i > 0)
+		lnode_getat(l->head, i - 1)->next = newn;
+	else
+		l->head = newn;
 }
 
 void list_insertcat(list *l, size_t i, list *lcat)
