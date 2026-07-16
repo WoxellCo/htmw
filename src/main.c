@@ -1,5 +1,4 @@
-#include "htmw.h"
-#include "luax.h"
+#include <htmw.h>
 
 int main() {
     test(7);

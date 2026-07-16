@@ -1,3 +1,6 @@
 [submodule "luax"]
-	path = luax
+	path = libhtmw/luax
 	url = https://github.com/WoxellCo/luax.git
+[submodule "curl"]
+	path = libhtmw/curl
+	url = https://github.com/curl/curl.git
