@@ -18,7 +18,7 @@ extern "C" {
 #include "flag.h"
 
 #include "str.h"
-#include "regex.h"
+#include <luax_regex.h>
 
 typedef struct htmw_context_s htmw_context;
 
