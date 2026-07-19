@@ -20,7 +20,22 @@ target_include_directories(${PROJECT_NAME}
 add_subdirectory(luax)
 add_subdirectory(curl)
 
-include_directories(include luax/include curl/include)
+include_directories(include luax/include curl/include
+    lua/win64_vc17/include
+)
 
-#target_link_libraries(${PROJECT_NAME})
-target_link_libraries(${PROJECT_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/lua/lua-5.5.0/install/lib/liblua.a m luax libcurl)
+if (WIN32)
+    if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+        target_link_libraries(${PROJECT_NAME} luax libcurl
+            ${CMAKE_CURRENT_SOURCE_DIR}/lua/win64_vc17/lua55.lib
+        )
+    else()
+        target_link_libraries(${PROJECT_NAME} luax libcurl
+            ${CMAKE_CURRENT_SOURCE_DIR}/lua/win32_vc17/lua55.lib
+        )
+    endif()
+else()
+    target_link_libraries(${PROJECT_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/lua/lua-5.5.0/install/lib/liblua.a m luax libcurl)
+endif()
+
+#target_link_libraries(${PROJECT_NAME} PRIVATE lua)

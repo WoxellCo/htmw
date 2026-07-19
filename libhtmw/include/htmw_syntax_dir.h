@@ -5,7 +5,7 @@ typedef struct syntaxer_list syntaxer_list;
 
 #include "luaw.h"
 #include "luax.h"
-#include "regex.h"
+#include <luax_regex.h>
 #include "syntaxer.h"
 #include "htmw.h"
 

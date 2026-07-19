@@ -2833,9 +2833,11 @@ typedef struct {
     size_t len;
 } txt_list_tot_len;
 
+#if 0
 typedef struct {
     //ht_template_arg_value
 } ;
+#endif
 
 string htmw_extract_default_syntax(const ht_template *t, const string key) {
     if (t == NULL || str_isnull(key))
@@ -3641,9 +3643,11 @@ struct tag_info_lite_s {
     string args;    // string view of the starting point of the attributes
 };
 
+#if 0
 typedef struct htmw_tag_props_list_s {
 
 } htmw_tag_props_list;
+#endif
 
 // this is a lightweight version of the tag parser that doesn't store the list of attributes
 // 2026-02-19: maybe this will be inlined using a macro to optimize the engine

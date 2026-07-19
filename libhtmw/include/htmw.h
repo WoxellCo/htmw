@@ -32,12 +32,18 @@
 
 // #include "htmw_memory.h"
 
+#if 0
+#ifdef _MSC_VER && !__INTEL_COMPILER
+#pragma comment(lib, "../lua/lua55.lib")
+#endif
+#endif
+
 #if defined(_WIN32)
     //#define GLOBAL_INCLUDE_PATH_LEN 17
-    #define GLOBAL_INCLUDE_PATH "C:\\htmw\\0.6\\include"
+    #define GLOBAL_INCLUDE_PATH "C:\\htmw\\0.7\\include"
 #elif defined(__unix__)
     //#define GLOBAL_INCLUDE_PATH_LEN 31
-    #define GLOBAL_INCLUDE_PATH "/usr/local/lib/htmw/0.6"
+    #define GLOBAL_INCLUDE_PATH "/usr/local/lib/htmw/0.7"
 #else
     #error "Unsupported platform"
 #endif
@@ -208,7 +214,7 @@ string read_file(const char* path, int exe_location);
 
 #include "luaw.h"
 #include "luax.h"
-#include <regex.h>
+#include <luax_regex.h>
 
 #include "htmw_syntax_notation.h"
 #include "htmw_syntax_dir.h"
