@@ -1191,6 +1191,10 @@ void htmw_preprocess(lua_State* L, string in, htmw_context* ectx, list *global_p
                                 t->flags |= TEMPLATE_DINNER;
                                 idx += 6;
                                 continue;
+                            } else if (!sty && !strncmpw(in.c_str + idx + i, strl("dargs"), 5) && (in.c_str[idx + i + 5] == charl(' ') || in.c_str[idx + i + 5] == charl('\n') || in.c_str[idx + i + 5] == charl('\t') || in.c_str[idx + i + 5] == charl('\r'))) {
+                                t->flags |= TEMPLATE_DARGS;
+                                idx += 5;
+                                continue;
                             }
                             sty = 1;
                             str_append_ch(&name, c);
@@ -1407,7 +1411,7 @@ void htmw_preprocess(lua_State* L, string in, htmw_context* ectx, list *global_p
                                             i++;
                                             //puts("lua_comment_mode = 0");
                                             lua_comment_mode = 0;
-                                        } else if (in_str_type = charl(']') && !in_str_backslashing) {
+                                        } else if (in_str_type == charl(']') && !in_str_backslashing) {
                                             i++;
                                             in_str_type = charl('\0');
                                         }
@@ -2839,23 +2843,6 @@ typedef struct {
 } ;
 #endif
 
-string htmw_extract_default_syntax(const ht_template *t, const string key) {
-    if (t == NULL || str_isnull(key))
-        return nullstr;
-    string default_syntax_id = nullstr;
-    for (size_t j = 0; j < t->args->size; j++) {
-        const ht_template_arg* arg = VECT_A(ht_template_arg, t->args) + j;
-        if (arg->name.length == key.length && !strncmp(arg->name.c_str, key.c_str, key.length)) {
-            if (arg->flags & T_ARG_SYNTAX) {
-                default_syntax_id = arg->syntax_id;
-            } else {
-                // TODO: error
-            }
-        }
-    }
-    return default_syntax_id;
-}
-
 // takes a string of args (`in`) and outputs an ordered & filtered list of arg `name` + `value` in a txt_template based on the template (`t`)
 int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_context* ctx) {
     list* argsl = list_new();
@@ -2885,10 +2872,10 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
             switch (mode) {
             case 0: // enter name mode
                 arg = (ht_template_arg_value*)malloc(sizeof(ht_template_arg_value));
-                arg->name = nullstr;
+                arg->key = nullstr;
                 arg->value = nullstr;
                 arg->flags = 0;
-                arg->name.c_str = in.c_str + i;
+                arg->key.c_str = in.c_str + i;
                 neutral_mode = 0;
                 last_ent = i;
                 mode = 1;
@@ -2903,10 +2890,10 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
                 //str_append_ch(&arg->value, charl('\b'));
                 list_add(argsl, arg);
                 arg = (ht_template_arg_value*)malloc(sizeof(ht_template_arg_value));
-                arg->name = nullstr;
+                arg->key = nullstr;
                 arg->value = nullstr;
                 arg->flags = 0;
-                arg->name.c_str = in.c_str + i;
+                arg->key.c_str = in.c_str + i;
                 neutral_mode = 0;
                 last_ent = i;
                 mode = 1;
@@ -3263,7 +3250,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
             case 0:
                 break;
             case 1: // exit name mode
-                arg->name.length = i - last_ent;
+                arg->key.length = i - last_ent;
                 mode = 2;
                 break;
             case 2: // ignore
@@ -3299,7 +3286,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
                 throw_error("Unexpected symbol '=' in widget tag", E_EXIT);
                 break;
             case 1: // name=
-                arg->name.length = i - last_ent;
+                arg->key.length = i - last_ent;
                 mode = 3;
                 break;
             case 2:
@@ -3334,7 +3321,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
             case 0:
                 break;
             case 1: // exit name mode
-                arg->name.length = i - last_ent;
+                arg->key.length = i - last_ent;
                 mode = 2;
                 arg->value = nullstr;
                 //printf("i: %zu | le: %zu\n", i, last_ent);
@@ -3369,7 +3356,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
             {
             case 3: {
                 //VECT_A();
-                string default_syntax_id = htmw_extract_default_syntax(t, arg->name);
+                string default_syntax_id = htmw_extract_default_syntax(t, arg->key);
                 htmw_syntax_literal lit = txt_parse_syntax_literal(ctx, in.c_str + i, SIZE_MAX, default_syntax_id.c_str, default_syntax_id.length);
                 if (lit.error) {
                     // TODO: throw exception
@@ -3442,7 +3429,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
         for (size_t j = 0; j < argsl->size; j++) {
             ht_template_arg_value* o = (ht_template_arg_value*)ln->data;
 
-            if (!strncmpw(VECT_A(ht_template_arg, a)[i].name.c_str, o->name.c_str, o->name.length)) {
+            if (!strncmpw(VECT_A(ht_template_arg, a)[i].name.c_str, o->key.c_str, o->key.length)) {
                 found = 1;
                 if (str_isnull(o->value)) {
                     o->value = VECT_A(ht_template_arg, a)[i].default_value;
@@ -3516,7 +3503,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
             if (!str_isnull(arg.default_value)) {
                 if (flag_includes(arg.flags, T_ARG_NULLABLE)) {
                     ht_template_arg_value* o = (ht_template_arg_value*)malloc(sizeof(ht_template_arg_value));
-                    o->name = str_cpy(arg.name); // ??? str_cpy?
+                    o->key = str_cpy(arg.name); // ??? str_cpy?
                     //o->value = nullstr;
                     o->flags = T_ARGV_NONE;
                     string v = str_new(3);
@@ -3538,7 +3525,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
                     continue;
                 } else {
                     ht_template_arg_value* o = (ht_template_arg_value*)malloc(sizeof(ht_template_arg_value));
-                    o->name = str_cpy(arg.name); // ??? str_cpy?
+                    o->key = str_cpy(arg.name); // ??? str_cpy?
                     o->flags = 0;
                     #if 0
                     o->value = str_cpy(arg.default_value);
@@ -3565,7 +3552,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
                 }
             } else if (flag_includes(arg.flags, T_ARG_NULLABLE)) {
                 ht_template_arg_value* o = (ht_template_arg_value*)malloc(sizeof(ht_template_arg_value));
-                o->name = str_cpy(arg.name); // ??? str_cpy?
+                o->key = str_cpy(arg.name); // ??? str_cpy?
                 //o->value = nullstr;;
                 o->flags = T_ARGV_NONE;
                 //o->value = str_cpy(o->value);
@@ -3619,315 +3606,6 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
     out->txts = args;
     //*out = args;
     return 1;
-}
-
-enum tag_parse_status_e {
-    htmw_tps_beginning = 0,
-    htmw_tps_closing = 1,
-    htmw_tps_typehash = 2,
-    htmw_tps_typename = 3,
-    htmw_tps_void = 4,
-    htmw_tps_arg_key = 5,
-    htmw_tps_arg_key_after = 6,
-    htmw_tps_arg_assign = 7,
-    htmw_tps_arg_value = 8,
-    htmw_tps_self_closing = 9,
-};
-
-// 2026-02-19
-struct tag_info_lite_s {
-    size_t n;       // length of the tag like <tag attrib="val"> would be 18
-    string name;    // name of the tag (this string is not in a new allocation)
-    uint8_t flags;  // self closing or closing
-    size_t argc;    // number of attributes
-    string args;    // string view of the starting point of the attributes
-};
-
-#if 0
-typedef struct htmw_tag_props_list_s {
-
-} htmw_tag_props_list;
-#endif
-
-// this is a lightweight version of the tag parser that doesn't store the list of attributes
-// 2026-02-19: maybe this will be inlined using a macro to optimize the engine
-static inline struct tag_info_lite_s htmw_analyze_tag(const htmw_context *ctx, const string in, const char *required_name, size_t required_name_len) {
-    /*
-    [phases]
-    0: beginning (name or slash?)
-    1: slash passed
-    1.5: # native tag notation
-    2: constructing name
-    3: name/arg passed (whitespace) <= returning point
-    4: constructing arg name
-    5: arg name end
-    6: equals sign passed (if there's anything else other than a whitespace return to point 3)
-    7: constructing value
-    8: self-closing slash
-    */
-    struct tag_info_lite_s o = {
-        .n = 0,
-        .name = nullstr,
-        .flags = 0,
-        .argc = 0,
-        .args = nullstr
-    };
-    if (in.c_str[0] != '<') return o; // null result
-    char c;
-    uint8_t phase = 0;
-    uint8_t loop = 1;
-    uint8_t value_escape = 0;
-    char bounds = '\0';
-    size_t args_start_idx = 0;
-
-    size_t last_key_start_idx = 0;
-    string last_key = nullstr;
-    //printf("L: %zu\n", in.length);
-    size_t i;
-    for (i = 1; i < in.length && loop; i++) {
-        c = in.c_str[i];
-        //putc(c, stdout);
-        //printf("c: '%c', i: %zu, phase: %d\n", c, i, phase);
-        switch (c)
-        {
-        case '>'://putc(">", stdout);
-            switch (phase)
-            {
-            case htmw_tps_beginning:
-            case htmw_tps_closing:
-            //puts("1");
-                return o; // null result
-            case htmw_tps_typename:
-                o.name.length = i - 1 - !!(o.flags & (1 << 0));
-                if (required_name != NULL && (o.name.length != required_name_len || strncmp(o.name.c_str, required_name, required_name_len))) {
-                    o.name = nullstr;
-                    //puts("2");
-                    return o;
-                }
-            case htmw_tps_void:
-            case htmw_tps_arg_key_after:
-                //loop = 0;
-                //o.n = i + 1;
-                //if (o.args.c_str != NULL && o.args.length == 0 && (o.flags ^ (1 << 0))) {
-                //    o.args.length = i - 1 - args_start_idx;
-                //}
-                //break;
-            case htmw_tps_arg_key:
-                loop = 0;//puts("a");
-                o.n = i + 1;
-                if (o.args.c_str != NULL && o.args.length == 0 && !(o.flags & (1 << 0))) {
-                    o.args.length = i - args_start_idx;
-                }
-                break;
-            case htmw_tps_arg_assign:
-            case htmw_tps_arg_value:
-                if (bounds == '\0') {
-                    loop = 0;//puts("b");
-                    o.n = i + 1;
-                    if (o.args.c_str != NULL && o.args.length == 0 && !(o.flags & (1 << 0))) {
-                        o.args.length = i - args_start_idx;
-                    }
-                }
-                break;
-            case htmw_tps_self_closing:
-                loop = 0;//puts("c");
-                o.n = i + 1;
-                //
-                if (o.args.c_str != NULL && o.args.length == 0 && !(o.flags & (1 << 0))) {
-                    o.args.length = i - args_start_idx;
-                }//
-                break;
-            default:
-                break;
-            }
-            break;
-        case '\t':
-        case '\n':
-        case '\r':
-        case ' '://puts("[whitespace]");
-            switch (phase)
-            {
-            case htmw_tps_beginning:
-            case htmw_tps_closing:
-                //puts("3");
-                return o; // null result
-            case htmw_tps_typename:
-                o.name.length = i - 1 - !!(o.flags & (1 << 0));
-                if (o.argc == 0) {
-                    o.args.c_str = in.c_str + i;
-                    args_start_idx = i;
-                }
-                if (required_name != NULL && (o.name.length != required_name_len || strncmp(o.name.c_str, required_name, required_name_len))) {
-                    o.name = nullstr;
-                    //puts("4");
-                    return o;
-                }
-            case htmw_tps_arg_key:
-                last_key.c_str = in.c_str + last_key_start_idx;
-                last_key.length = i - last_key_start_idx;
-                phase++;// puts("AAA 3");
-                break;
-            case htmw_tps_arg_value:
-                if (bounds == '\0') {
-                    phase = htmw_tps_void;
-                }
-                break;
-            case htmw_tps_arg_key_after:
-                if (o.argc == 0) {
-                    o.args.c_str = in.c_str + i;
-                    args_start_idx = i;
-                }
-                break;
-            default:
-                break;
-            }
-            break;
-        case '='://puts("=");
-            if (phase == htmw_tps_arg_key) {
-                last_key.c_str = in.c_str + last_key_start_idx;
-                last_key.length = i - last_key_start_idx;
-                phase = htmw_tps_arg_assign;// puts("AAA 1");// <= here you can use to set the thing
-            } else if (phase == htmw_tps_arg_key_after) {
-                phase = htmw_tps_arg_assign;// puts("AAA 2");
-            }
-            break;
-        case '"':
-        case '\'':
-        case '`'://puts("\"");
-            if (phase == htmw_tps_arg_assign && bounds == '\0') {
-                bounds = c;
-                phase = htmw_tps_arg_value;
-            } else if (bounds == c) {
-                if (c != '`' || !value_escape) {
-                    bounds = '\0';
-                    phase = htmw_tps_void;
-                }
-            }
-            break;
-        case '{'://putc("{", stdout);
-            if (phase == htmw_tps_arg_assign) {
-                // TODO: implement a lightweight analyze only purpose function
-                luax_transpile_result ro = luax_transpile(in.c_str + i + 1, in.length - 1, NULL);
-                if (ro.error) { // ofc a more accurate error log will be implemented
-                    printf("[HTMW LuaX Error]: there is an error on the LuaX syntax (0)\n", ro.error);
-                    exit(1);
-                }
-                i += ro.result.second + 1;
-                phase = htmw_tps_void;
-            }
-            break;
-        case '#'://puts("#"); this should handle both the native template and the vT.7 syntax notation
-            if (phase == htmw_tps_typehash) {
-                o.flags |= (1 << 2);
-                phase++;
-            } else if (phase == htmw_tps_arg_assign) {
-                if (o.argc == 0) { /// TEMPORARY
-                    //o.args.c_str = in.c_str + i;
-                    args_start_idx = i;
-                }
-                /// TODO: OPTIMIZE THIS PROCESS and put it in a separate subroutine
-                ht_template *t = NULL;
-                u_map_node* mnt = (u_map_node*)ctx->templates->head;
-                for (size_t j = 0; j < ctx->templates->size; j++) {
-                    ht_template* tt = (ht_template*)mnt->data;
-                    if (o.name.length == tt->name.length && !strncmpw(o.name.c_str, tt->name.c_str, o.name.length)) {
-                        t = tt;
-                        break;
-                    }
-                    mnt = mnt->next;
-                }
-                string default_syntax_id = htmw_extract_default_syntax(t, last_key);
-                htmw_syntax_literal lit = txt_parse_syntax_literal(ctx, in.c_str + i, SIZE_MAX, default_syntax_id.c_str, default_syntax_id.length);
-                if (lit.error) {
-                    // TODO: throw exception
-                    throw_error("there was an error in the syntax notation", E_EXIT);
-                }
-                //printf("%zu >> ", i);
-
-                i += lit.total_length - 1;
-
-                //printf("%zu, ltl %zu\n", i, lit.total_length);
-                
-                phase = htmw_tps_void;
-                ///
-                //phase++;
-            }
-            break;
-            // vT.7s syntax notation
-            break;
-        case '\\'://puts("\\");
-            if (phase == htmw_tps_arg_value && bounds == '`' && !value_escape) {
-                value_escape = 2;
-            }
-            break;
-        case '/'://puts("/");
-            //printf(">>>>>>>>>> %d\n", phase);
-            if (phase == htmw_tps_beginning) { // closing
-                o.flags |= (1 << 0);
-                phase = htmw_tps_closing;
-            } else if (phase == htmw_tps_void || phase == htmw_tps_typename || phase == htmw_tps_arg_key/* || phase == htmw_tps_arg_assign*/ || phase == htmw_tps_arg_key_after || (phase == htmw_tps_arg_value && bounds == '\0')) { // self-closing
-                o.flags |= (1 << 1);
-                phase = htmw_tps_self_closing;//puts("NAME: 1");
-                if (o.name.c_str != NULL && o.name.length == 0) {
-                    o.name.length = i - 1;
-                    if (required_name != NULL && o.name.length != required_name_len || strncmp(o.name.c_str, required_name, required_name_len)) {
-                        o.name = nullstr;
-                        //puts("5");
-                        return o;
-                    }
-                } else if (o.args.c_str != NULL && o.args.length == 0 && !(o.flags & (1 << 0))) {
-                    o.args.length = i - args_start_idx;
-                }
-            }//puts("(/) break");
-            break;
-        default:
-            if (c > ' ') {//puts("any"); // any symbol
-                switch (phase)
-                {
-                case htmw_tps_beginning:
-                    //puts("====================================");
-                    //o.name.c_str = in.c_str + i;
-                    //phase = 2;
-                    //break;
-                case htmw_tps_closing:
-                case htmw_tps_typehash:
-                    o.name.c_str = in.c_str + i;
-                    phase = htmw_tps_typename;
-                    //puts("NAME: 2");
-                    break;
-                case htmw_tps_void:
-                    o.argc++;
-                    last_key_start_idx = i;
-                case htmw_tps_arg_key_after:
-                    if (o.argc == 0) {
-                        o.args.c_str = in.c_str + i;
-                        args_start_idx = i;
-                    }
-                    //phase++; puts("AAA 4");
-                    phase = htmw_tps_arg_key;
-                    break;
-                //case 8:
-                //    throw_error("unexpected symbol in ending self-closing tag", E_EXIT);
-                //    break;
-                default:
-                    break;
-                }
-            }
-            break;
-        }
-        if (value_escape > 0) {
-            value_escape--;
-        }
-    }
-
-    //puts("---AT---");
-    //printf("%.7s\n", in.c_str);
-    //printf("[%.*s]\n", required_name_len, required_name);
-    //str_debug(o.name);
-    //puts("---/AT--");
-    //printf("->i: %zu\n", i);
-
-    return o;
 }
 
 // 2026-02-19: processes the text and returns where the template result should be placed
@@ -4007,7 +3685,7 @@ txt_template_fill_data htmw_process_txt(const htmw_context *ctx) {
                 .length = in.length - idx,
                 .size = 0
             };
-            struct tag_info_lite_s tag_info = htmw_analyze_tag(ctx, tag_sv, NULL, 0);
+            struct tag_info_s tag_info = htmw_analyze_tag(ctx, tag_sv, NULL, 0);
             //printf("tag: n: %zu\n", tag_info.n);
             //str_debug(tag_info.args);
             #endif
@@ -4493,7 +4171,7 @@ txt_template_fill_data htmw_process_txt(const htmw_context *ctx) {
                         .length = in.length - i - idx - 1,
                         .size = 0
                     };
-                    struct tag_info_lite_s e = htmw_analyze_tag(ctx, in_tag, t->name.c_str, t->name.length);
+                    struct tag_info_s e = htmw_analyze_tag(ctx, in_tag, t->name.c_str, t->name.length);
 
                     //str_debug(in_tag);
                     //str_debug(e.name);
