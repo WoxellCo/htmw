@@ -1,6 +1,8 @@
 #include "htmw_tag.h"
 #include "htmw_template.h"
+#include "str.h"
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #if 0
@@ -27,7 +29,7 @@ string htmw_extract_default_syntax(const ht_template *t, const string key) {
 }
 
 static inline uint8_t htmw_props_vector_push(ht_template_arg_value *value_vector[], size_t *n, size_t *cap, ht_template_arg_value *prop) {
-    if (value_vector == NULL || n == NULL || cap == NULL)
+    if (value_vector == NULL || n == NULL || cap == NULL || prop == NULL)
         return 0;
 
     if (*value_vector == NULL) {
@@ -39,8 +41,12 @@ static inline uint8_t htmw_props_vector_push(ht_template_arg_value *value_vector
     }
 
     if (*n >= *cap) {
+        //if (*cap <= 4)
+        //    *cap = 8;
+        //printf("CAP: %zu\n", *cap);
+
         size_t new_cap = (*cap) * 2;//1.5;
-        ht_template_arg_value *tmp = (ht_template_arg_value *)realloc(*value_vector, new_cap * sizeof(ht_template_arg_value *));
+        ht_template_arg_value *tmp = (ht_template_arg_value *)realloc(*value_vector, new_cap * sizeof(ht_template_arg_value));
         if (tmp == NULL) {
             return 0;
         }
@@ -48,14 +54,26 @@ static inline uint8_t htmw_props_vector_push(ht_template_arg_value *value_vector
         *value_vector = tmp;
     }
 
-    (*value_vector)[*n++] = *prop;
+    if (str_isnull(prop->value)) {
+        prop->flags |= T_ARGV_NONE;
+    }
+
+    //str_debug(prop->key);
+
+    (*value_vector)[(*n)++] = *prop;
+    *prop = (ht_template_arg_value){
+        .key = nullstr,
+        .value = nullstr,
+        .flags = 0,
+        .syntax_id = nullstr
+    };
 
     return 1;
 }
 
 // this is a lightweight version of the tag parser that doesn't store the list of attributes
 // 2026-02-19: maybe this will be inlined using a macro to optimize the engine
-struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, const char *required_name, size_t required_name_len, ht_template_arg_value *value_vector[]) {
+struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, const char *required_name, size_t required_name_len, ht_template_arg_value *value_vector[], size_t *value_vector_size, size_t *value_vector_cap) {
     /*
     [phases]
     0: beginning (name or slash?)
@@ -70,7 +88,12 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
     8: self-closing slash
     */
 
-    ht_template_arg_value prop;
+    ht_template_arg_value prop = (ht_template_arg_value){
+        .key = nullstr,
+        .value = nullstr,
+        .syntax_id = nullstr,
+        .flags = 0
+    };
 
     struct tag_info_s o = {
         .n = 0,
@@ -87,8 +110,9 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
     char bounds = '\0';
     size_t args_start_idx = 0;
 
-    size_t last_key_start_idx = 0;
-    string last_key = nullstr;
+    size_t last_key_start_idx = 0, last_value_start_idx = 0;
+    //string last_key = nullstr; // last_key
+    //string last_value = nullstr; // last_value
     //printf("L: %zu\n", in.length);
     size_t i;
     for (i = 1; i < in.length && loop; i++) {
@@ -125,14 +149,25 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                 if (o.args.c_str != NULL && o.args.length == 0 && !(o.flags & (1 << 0))) {
                     o.args.length = i - args_start_idx;
                 }
+                ///
+                prop.key.length = i - last_key_start_idx; //last_key
+                prop.key.c_str = in.c_str + i;
+                //prop.key = last_key;
+                htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 break;
             case htmw_tps_arg_assign:
             case htmw_tps_arg_value:
                 if (bounds == '\0') {
                     loop = 0;//puts("b");
                     o.n = i + 1;
-                    if (o.args.c_str != NULL && o.args.length == 0 && !(o.flags & (1 << 0))) {
-                        o.args.length = i - args_start_idx;
+                    if (o.args.c_str != NULL && o.args.length == 0) {
+                        if (!(o.flags & (1 << 0)))
+                            o.args.length = i - args_start_idx;
+
+                        ///
+                        prop.value.length = i - last_value_start_idx;//last_value
+                        //prop.value = last_value;
+                        htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                     }
                 }
                 break;
@@ -170,13 +205,15 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                     return o;
                 }
             case htmw_tps_arg_key:
-                last_key.c_str = in.c_str + last_key_start_idx;
-                last_key.length = i - last_key_start_idx;
-                phase++;// puts("AAA 3");
+                prop.key.c_str = in.c_str + last_key_start_idx;//last_key
+                prop.key.length = i - last_key_start_idx;//last_key
+                phase = htmw_tps_arg_key_after;// puts("AAA 3");
                 break;
             case htmw_tps_arg_value:
                 if (bounds == '\0') {
                     phase = htmw_tps_void;
+                    prop.value.length = i - last_value_start_idx;
+                    htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 }
                 break;
             case htmw_tps_arg_key_after:
@@ -191,8 +228,8 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
             break;
         case '='://puts("=");
             if (phase == htmw_tps_arg_key) {
-                last_key.c_str = in.c_str + last_key_start_idx;
-                last_key.length = i - last_key_start_idx;
+                prop.key.c_str = in.c_str + last_key_start_idx;//last_key
+                prop.key.length = i - last_key_start_idx;//last_key
                 phase = htmw_tps_arg_assign;// puts("AAA 1");// <= here you can use to set the thing
             } else if (phase == htmw_tps_arg_key_after) {
                 phase = htmw_tps_arg_assign;// puts("AAA 2");
@@ -204,10 +241,14 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
             if (phase == htmw_tps_arg_assign && bounds == '\0') {
                 bounds = c;
                 phase = htmw_tps_arg_value;
+                prop.value.c_str = in.c_str + i + 1;
+                last_value_start_idx = i;
             } else if (bounds == c) {
                 if (c != '`' || !value_escape) {
                     bounds = '\0';
                     phase = htmw_tps_void;
+                    prop.value.length = i - last_value_start_idx - 1;
+                    htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 }
             }
             break;
@@ -221,6 +262,10 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                 }
                 i += ro.result.second + 1;
                 phase = htmw_tps_void;
+                prop.value.length = ro.result.first.len;
+                prop.value.c_str = ro.result.first.s;
+                prop.flags |= T_ARGV_VALUE;
+                htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
             }
             break;
         case '#'://puts("#"); this should handle both the native template and the vT.7 syntax notation
@@ -243,7 +288,7 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                     }
                     mnt = mnt->next;
                 }
-                string default_syntax_id = htmw_extract_default_syntax(t, last_key);
+                string default_syntax_id = htmw_extract_default_syntax(t, prop.key);//last_key
                 htmw_syntax_literal lit = txt_parse_syntax_literal(ctx, in.c_str + i, SIZE_MAX, default_syntax_id.c_str, default_syntax_id.length);
                 if (lit.error) {
                     // TODO: throw exception
@@ -256,6 +301,10 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                 //printf("%zu, ltl %zu\n", i, lit.total_length);
                 
                 phase = htmw_tps_void;
+
+                prop.value = lit.content;
+                prop.syntax_id = lit.explicit_syntax_id;
+                htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 ///
                 //phase++;
             }
@@ -268,21 +317,32 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
             }
             break;
         case '/'://puts("/");
-            printf(">>>>>>>>>> %d\n", phase);
+            //printf(">>>>>>>>>> %d\n", phase);
             if (phase == htmw_tps_beginning) { // closing
                 o.flags |= (1 << 0);
                 phase = htmw_tps_closing;
-            } else if (phase == htmw_tps_void || phase == htmw_tps_typename || phase == htmw_tps_arg_key/* || phase == htmw_tps_arg_assign*/ || phase == htmw_tps_arg_key_after || (phase == htmw_tps_arg_value && bounds == '\0')) { // self-closing
+            } else if (phase == htmw_tps_void || phase == htmw_tps_typename || phase == htmw_tps_arg_key/* || phase == htmw_tps_arg_assign*/ || phase == htmw_tps_arg_key_after || (phase == htmw_tps_arg_value && bounds == '\0')) {
+                // self-closing case
                 o.flags |= (1 << 1);
-                phase = htmw_tps_self_closing;puts("NAME: 1");
+                if (phase == htmw_tps_arg_key) {
+                    prop.key.length = i - last_value_start_idx;
+                    htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
+                } else if (phase == htmw_tps_arg_value) {
+                    prop.value.length = i - last_value_start_idx;
+                    htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
+                }
+
+                phase = htmw_tps_self_closing;//puts("NAME: 1");
                 if (o.name.c_str != NULL && o.name.length == 0) {
+                    // if the name is set but the length is not updated `<Element/>`
                     o.name.length = i - 1;
                     if (required_name != NULL && o.name.length != required_name_len || strncmp(o.name.c_str, required_name, required_name_len)) {
+                        // if the required name is set but not matching with the tag name
                         o.name = nullstr;
-                        //puts("5");
                         return o;
                     }
                 } else if (o.args.c_str != NULL && o.args.length == 0 && !(o.flags & (1 << 0))) {
+                    // arguments exist, but the length is not updated, and the tag is not closing (closing tags dont have arguments)
                     o.args.length = i - args_start_idx;
                 }
             }//puts("(/) break");
@@ -303,9 +363,14 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                     //puts("NAME: 2");
                     break;
                 case htmw_tps_void:
+                case htmw_tps_arg_key_after:
+                    if (o.argc > 0 && !str_isnull(prop.key)) {
+                        //str_debug(prop.key);
+                        htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
+                    }
                     o.argc++;
                     last_key_start_idx = i;
-                case htmw_tps_arg_key_after:
+                    prop.key.c_str = in.c_str + i;
                     if (o.argc == 0) {
                         o.args.c_str = in.c_str + i;
                         args_start_idx = i;
@@ -318,6 +383,8 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                 //    break;
                 case htmw_tps_arg_assign:
                     bounds = '\0';
+                    prop.value.c_str = in.c_str + i;
+                    last_value_start_idx = i;
                     phase = htmw_tps_arg_value;
                     break;
                 default:
@@ -337,6 +404,15 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
     //str_debug(o.name);
     //puts("---/AT--");
     //printf("->i: %zu\n", i);
+
+    // PUSH NULL (terminated)
+    prop = (ht_template_arg_value){
+        .key = nullstr,
+        .value = nullstr,
+        .syntax_id = nullstr,
+        .flags = 0
+    };
+    htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
 
     return o;
 }

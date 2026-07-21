@@ -28,6 +28,10 @@ else()
     include_directories(libhtmw/include include libhtmw/luax/include libhtmw/curl/include)
 endif()
 
+add_compile_options(-fsanitize=address)
+add_link_options(-fsanitize=address)
+
+
 # to enablde debug please run cmake like this
 # `cmake -DCMAKE_BUILD_TYPE=Debug ..`
 

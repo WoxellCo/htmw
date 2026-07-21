@@ -6,6 +6,12 @@
  * The purpose for now is just to implement and test it's functionality without focusing 100% on performance & optimization.
  */
 #include "htmw.h"
+#include "htmw_template.h"
+#include "lua.h"
+#include "str.h"
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
 
 #define DEBUG_MODE 0
 
@@ -2456,7 +2462,7 @@ string template_fill(ht_template_core* core, const string* values, const string 
 #define NEW_PROCESS_TEMPLATE NEW_COMPILE_TXT
 #if NEW_PROCESS_TEMPLATE
 // process the template and returns a string
-string process_template(const htmw_context *ctx, const ht_template* t, const strplex *args, size_t args_begin[], const string inner) {
+string process_template(const htmw_context *ctx, const ht_template* t, const strplex *args, size_t args_begin[], const string inner, ht_template_arg_value *args_vect, size_t args_vect_size, size_t *args_vect_cursor) {
     const ht_template_core *core = t->core;
     lua_State *L = ctx->L;
 
@@ -2469,6 +2475,58 @@ string process_template(const htmw_context *ctx, const ht_template* t, const str
     if (t->flags & TEMPLATE_DINNER) { // vT.7 (2026-01-22)
         lua_pushstring(L, inner.c_str);
     }//printf("FOR \"%s\"\n", t->name.c_str);
+    if (t->flags & TEMPLATE_DARGS) {
+        lua_newtable(L);
+        //for (size_t i = 0; i < args_vect_size; i++) {
+        for (; (*args_vect_cursor) < args_vect_size; (*args_vect_cursor)++) {
+            // TODO: FILL ARGS TABLE
+            ht_template_arg_value arg = args_vect[*args_vect_cursor];
+            if (str_isnull(arg.key)) {
+                (*args_vect_cursor)++;
+                break;
+            }
+
+            char key[256];
+            strncpy(key, arg.key.c_str, min(arg.key.length, 255));
+            key[min(arg.key.length, 255)] = '\0';
+            
+            #if 1
+            if (arg.flags & T_ARGV_NONE) {
+                lua_pushnil(L);
+            } else if (arg.flags & T_ARGV_VALUE) {
+                size_t lin_len = arg.value.length;
+                char* lin = (char*)malloc((lin_len + 9 + 1) * sizeof(char));
+                lin[0] = 'r';
+                lin[1] = 'e';
+                lin[2] = 't';
+                lin[3] = 'u';
+                lin[4] = 'r';
+                lin[5] = 'n';
+                lin[6] = ' ';
+                lin[7] = '(';
+                strncpy(lin + 8, arg.value.c_str, lin_len);
+                lin[lin_len + 8] = ')';
+                lin[lin_len + 9] = '\0';
+                int r = luaL_loadstring(L, lin);
+                if (check_lua(L, r)) {
+                    if (lua_pcall(L, 0, 1, 0) == LUA_OK) {
+                        // ...
+                    } else {
+                        throw_error("Lua pcall is not ok", E_EXIT);
+                    }
+                } else {
+                    throw_error("Lua status is not ok", E_EXIT);
+                }
+                free(lin);
+            } else {
+                lua_pushlstring(L, arg.value.c_str, arg.value.length);
+            }
+            #else
+            lua_pushlstring(L, args_vect[i].value.c_str, args_vect[i].value.length);
+            #endif
+            lua_setfield(L, -2, key);
+        }
+    }
     for (size_t i = 0; i < t->args->size; i++) {
         const strplex_element *arg = (strplex_element *)(args->data + args_begin[i]);
         if (arg->meta & T_ARGV_NONE) { // pass nil ('\b' flag set)
@@ -2509,7 +2567,7 @@ string process_template(const htmw_context *ctx, const ht_template* t, const str
         }
     }
 
-    if (check_lua(L, lua_pcall(L, t->args->size + !!(t->flags & TEMPLATE_DINNER), 1, 0))) {
+    if (check_lua(L, lua_pcall(L, t->args->size + !!(t->flags & TEMPLATE_DINNER) + !!(t->flags & TEMPLATE_DARGS), 1, 0))) {
         if (lua_istable(L, -1)) {
             string* lvs = (string*)malloc(core->shifts_count * sizeof(string));
             for (size_t i = 0; i < core->shifts_count; i++) {
@@ -2556,7 +2614,9 @@ string process_template(const htmw_context *ctx, const ht_template* t, const str
             txt_template_fill_data tfd = htmw_process_txt(&inner_ctx);
             
             if (tfd.fields_count) {
-                string out = htmw_compile_txt(&inner_ctx, &tfd);
+                size_t inner_args_vect_cursor = 0;
+                string out = htmw_compile_txt(&inner_ctx, &tfd, &inner_args_vect_cursor);
+                free(tfd.args_vect);
                 lua_pop(L, 1);
                 return out;
             } else {
@@ -3013,15 +3073,18 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
             switch (mode) {
             case 0: // !
                 // TODO: throw exception
-                throw_error("Unexpected character `-` in widget tag, arg name expected", E_EXIT);
+                if (!(t->flags & TEMPLATE_DARGS))
+                    throw_error("Unexpected character `-` in widget tag, arg name expected", E_EXIT);
                 break;
             case 1: // name!
                 // TODO: throw exception
-                throw_error("Unexpected character `-` in widget tag, in arg name", E_EXIT);
+                if (!(t->flags & TEMPLATE_DARGS))
+                    throw_error("Unexpected character `-` in widget tag, in arg name", E_EXIT);
                 break;
             case 2: // name !
                 // TODO: throw exception
-                throw_error("Unexpected character `-` in widget tag, arg name or `=` expected", E_EXIT);
+                if (!(t->flags & TEMPLATE_DARGS))
+                    throw_error("Unexpected character `-` in widget tag, arg name or `=` expected", E_EXIT);
                 break;
             case 3: // name=!
                 value_bounds = charl('\0');
@@ -3051,15 +3114,18 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
             switch (mode) {
             case 0: // !
                 // TODO: throw exception
-                throw_error("Unexpected character `\\` in widget tag, arg name expected", E_EXIT);
+                if (!(t->flags & TEMPLATE_DARGS))
+                    throw_error("Unexpected character `\\` in widget tag, arg name expected", E_EXIT);
                 break;
             case 1: // name!
                 // TODO: throw exception
-                throw_error("Unexpected character `\\` in widget tag, in arg name", E_EXIT);
+                if (!(t->flags & TEMPLATE_DARGS))
+                    throw_error("Unexpected character `\\` in widget tag, in arg name", E_EXIT);
                 break;
             case 2: // name !
                 // TODO: throw exception
-                throw_error("Unexpected character `\\` in widget tag, arg name or `=` expected", E_EXIT);
+                if (!(t->flags & TEMPLATE_DARGS))
+                    throw_error("Unexpected character `\\` in widget tag, arg name or `=` expected", E_EXIT);
                 break;
             case 3: // name=!
                 value_bounds = charl('\0');
@@ -3377,20 +3443,25 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
             case 0: // !
                 // TODO: throw exception
                 //printf("'%lc'\n", c);
-                sprintf(err_msg, "Unexpected symbol `%c` in widget tag, arg name expected", c);
-                throw_error(err_msg, E_EXIT);
+                if (!(t->flags & TEMPLATE_DARGS)) {
+                    sprintf(err_msg, "Unexpected symbol `%c` in widget tag, arg name expected", c);
+                    throw_error(err_msg, E_EXIT);
+                }
                 break;
             case 1: // name!
                 // TODO: throw exception
                 //if (c != '/') {
+                if (!(t->flags & TEMPLATE_DARGS)) {
                     sprintf(err_msg, "Unexpected symbol `%c` in widget tag, in arg name", c);
                     throw_error(err_msg, E_EXIT);
-                //}
+                }
                 break;
             case 2: // name !
                 // TODO: throw exception
-                sprintf(err_msg, "Unexpected symbol `%c` in widget tag, arg name or `=` expected", c);
-                throw_error(err_msg, E_EXIT);
+                if (!(t->flags & TEMPLATE_DARGS)) {
+                    sprintf(err_msg, "Unexpected symbol `%c` in widget tag, arg name or `=` expected", c);
+                    throw_error(err_msg, E_EXIT);
+                }
                 break;
             case 3: // name=!
                 value_bounds = charl('\0');
@@ -3624,7 +3695,12 @@ txt_template_fill_data htmw_process_txt(const htmw_context *ctx) {
         .fields_count = 0,
         .ground = nullstr,
         .inner_shifts = NULL,
+        .args_vect = NULL,
+        .args_vect_size = 0,
+        .args_vect_cap = 0,
     };
+
+    size_t last_args_vect_size = 0;
 
     int comment_mode = 0;
     int php_mode = 0;
@@ -3685,7 +3761,17 @@ txt_template_fill_data htmw_process_txt(const htmw_context *ctx) {
                 .length = in.length - idx,
                 .size = 0
             };
-            struct tag_info_s tag_info = htmw_analyze_tag(ctx, tag_sv, NULL, 0);
+            struct tag_info_s tag_info = htmw_analyze_tag(ctx, tag_sv, NULL, 0, &out.args_vect, &out.args_vect_size, &out.args_vect_cap);
+            //struct tag_info_s tag_info = htmw_analyze_tag(ctx, tag_sv, NULL, 0, NULL, NULL);
+            #if 0
+            printf("[argc: %zu]\n", tag_info.argc);
+            for (size_t i = 0; i < tag_info.argc; i++) {
+                printf("%.*s@\"%.*s\"\n",
+                    (int)arg_vect[i].key.length, arg_vect[i].key.c_str,
+                    (int)arg_vect[i].value.length, arg_vect[i].value.c_str
+                );
+            }
+            #endif
             //printf("tag: n: %zu\n", tag_info.n);
             //str_debug(tag_info.args);
             #endif
@@ -3733,10 +3819,20 @@ txt_template_fill_data htmw_process_txt(const htmw_context *ctx) {
                     fl->pos = idx - difference;
                     fl->idx = j;
                     list_add(fields_list, (void*)fl);
-                    if (t != NULL && (t->flags & TEMPLATE_NINNER)) {
-                        ninner = 1;
-                        aninner = 1;
-                        *inner = nullstr;
+                    if (t != NULL) {
+                        if (t->flags & TEMPLATE_NINNER) {
+                            ninner = 1;
+                            aninner = 1;
+                            *inner = nullstr;
+                        }
+                        if (!(t->flags & TEMPLATE_DARGS)) {
+                            out.args_vect_size = last_args_vect_size;
+                            //free(out.args_vect); // temporary? remove after the txt_parse_args is replaced by htmw_analyze_tag?
+                            //out.args_vect = NULL;
+                            //out.args_vect_size = 0;
+                        } else {
+                            last_args_vect_size = out.args_vect_size;
+                        }
                     }
                     break;
                 } else {
@@ -4171,7 +4267,7 @@ txt_template_fill_data htmw_process_txt(const htmw_context *ctx) {
                         .length = in.length - i - idx - 1,
                         .size = 0
                     };
-                    struct tag_info_s e = htmw_analyze_tag(ctx, in_tag, t->name.c_str, t->name.length);
+                    struct tag_info_s e = htmw_analyze_tag(ctx, in_tag, t->name.c_str, t->name.length, NULL, NULL, NULL);
 
                     //str_debug(in_tag);
                     //str_debug(e.name);
@@ -4431,7 +4527,7 @@ string htmw_compile_txt(const htmw_context *ctx, txt_template_fill_data* tf) {
     return out;
 }
 #else
-string htmw_compile_txt(const htmw_context *ctx, const txt_template_fill_data *tf) {
+string htmw_compile_txt(const htmw_context *ctx, const txt_template_fill_data *tf, size_t *args_vect_cursor) {
     size_t difference = 0;
     string* fills = (string*)malloc(tf->fields_count * sizeof(string));
     ht_template** templates = (ht_template**)malloc(ctx->templates->size * sizeof(ht_template*));
@@ -4472,7 +4568,8 @@ string htmw_compile_txt(const htmw_context *ctx, const txt_template_fill_data *t
         };
         //strplex_print(&sp);
         //printf("args.size: %zu\n", t->args->size);
-        fills[i] = process_template(ctx, t, &tf->args, tf->arg_shifts + idx, inner);
+        //size_t inner_args_vect_cursor = 0;
+        fills[i] = process_template(ctx, t, &tf->args, tf->arg_shifts + idx, inner, tf->args_vect, tf->args_vect_size, args_vect_cursor);
         difference += fills[i].length;
         idx += template_args_count;
     }

@@ -1,6 +1,7 @@
 #ifndef HTMW_H
 #define HTMW_H
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
@@ -128,6 +129,9 @@ typedef struct {
     strplex inners;
     field_location* fields;                     // contains the info where each field is located on the ground (pos) and which placeholder (idx)
     string ground;                              // content with invisible placeholders
+    ht_template_arg_value *args_vect;
+    size_t args_vect_size;
+    size_t args_vect_cap;
 } txt_template_fill_data;
 
 int check_lua(lua_State* L, int r);
@@ -135,7 +139,7 @@ int check_lua(lua_State* L, int r);
 ht_template_core* htmw_process_template_inner(ht_template t);
 void htmw_preprocess(lua_State* L, string in, htmw_context* ectx, list *global_paths, int enable_network);
 txt_template_fill_data htmw_process_txt(const htmw_context *ctx);
-string htmw_compile_txt(const htmw_context *ctx, const txt_template_fill_data *tf);
+string htmw_compile_txt(const htmw_context *ctx, const txt_template_fill_data *tf, size_t *args_vect_cursor);
 string htmw_postprocess(string s);
 
 void throw_error(const char* msg, flag_t flags);

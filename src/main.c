@@ -160,9 +160,11 @@ int main(int argc, char** argv) {
     //printf("_%zu\n", tfd.fields_count);
 
     //strplex_print(&tfd.args);
-    string preout = htmw_compile_txt(&ctx, &tfd);
+    size_t args_vect_cursor = 0;
+    string preout = htmw_compile_txt(&ctx, &tfd, &args_vect_cursor);
 
     string out = htmw_postprocess(preout);
+    free(tfd.args_vect);
     //str_delete(preout);
 
     //struct regex_analyze_literal_s rl = regex_analyze_literal("/hello [[/]] world/gsx", 0);

@@ -1,5 +1,6 @@
 #include "luaw.h"
 #include "str.h"
+#include <stddef.h>
 
 int luaw_htmw_process(lua_State *L) {
     if (!lua_isstring(L, 1))
@@ -10,7 +11,8 @@ int luaw_htmw_process(lua_State *L) {
     htmw_preprocess(L, s, &inner_ctx, luaw_ctx->global_paths, luaw_ctx->flags & CTX_NETWORK);
     txt_template_fill_data tfd = htmw_process_txt(&inner_ctx);
     if (tfd.fields_count) {
-        string out = htmw_compile_txt(&inner_ctx, &tfd);
+        size_t inner_args_vect_cursor = 0;
+        string out = htmw_compile_txt(&inner_ctx, &tfd, &inner_args_vect_cursor);
         //string p_out = htmw_postprocess(out);
         lua_pushstring(L, out.c_str);
         str_delete(&out);
