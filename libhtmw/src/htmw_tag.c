@@ -1,9 +1,4 @@
 #include "htmw_tag.h"
-#include "htmw_template.h"
-#include "str.h"
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 #if 0
 typedef struct htmw_tag_props_list_s {
@@ -33,10 +28,10 @@ static inline uint8_t htmw_props_vector_push(ht_template_arg_value *value_vector
         return 0;
 
     if (*value_vector == NULL) {
-        *value_vector = (ht_template_arg_value *)malloc(4 * sizeof(ht_template_arg_value));
+        *value_vector = (ht_template_arg_value *)malloc(16 * sizeof(ht_template_arg_value));
         if (*value_vector == NULL)
             return 0;
-        *cap = 4;
+        *cap = 16;
         *n = 0;
     }
 
@@ -150,8 +145,10 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                     o.args.length = i - args_start_idx;
                 }
                 ///
-                prop.key.length = i - last_key_start_idx; //last_key
-                prop.key.c_str = in.c_str + i;
+                if (prop.key.length == 0) { // if key is still not completely set (<T @key>)
+                    prop.key.length = i - last_key_start_idx; //last_key
+                    prop.key.c_str = in.c_str + last_key_start_idx;
+                }
                 //prop.key = last_key;
                 htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 break;
@@ -324,8 +321,11 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
             } else if (phase == htmw_tps_void || phase == htmw_tps_typename || phase == htmw_tps_arg_key/* || phase == htmw_tps_arg_assign*/ || phase == htmw_tps_arg_key_after || (phase == htmw_tps_arg_value && bounds == '\0')) {
                 // self-closing case
                 o.flags |= (1 << 1);
-                if (phase == htmw_tps_arg_key) {
-                    prop.key.length = i - last_value_start_idx;
+                if (phase == htmw_tps_arg_key || phase == htmw_tps_arg_key_after) {;
+                    if (prop.key.length == 0) { // if key is still not completely set (<T @key>)
+                        prop.key.length = i - last_key_start_idx; //last_key
+                        prop.key.c_str = in.c_str + last_key_start_idx;
+                    }
                     htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 } else if (phase == htmw_tps_arg_value) {
                     prop.value.length = i - last_value_start_idx;

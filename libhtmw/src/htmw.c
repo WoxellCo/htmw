@@ -6,12 +6,7 @@
  * The purpose for now is just to implement and test it's functionality without focusing 100% on performance & optimization.
  */
 #include "htmw.h"
-#include "htmw_template.h"
 #include "lua.h"
-#include "str.h"
-#include <stddef.h>
-#include <stdio.h>
-#include <string.h>
 
 #define DEBUG_MODE 0
 
@@ -2492,7 +2487,8 @@ string process_template(const htmw_context *ctx, const ht_template* t, const str
             
             #if 1
             if (arg.flags & T_ARGV_NONE) {
-                lua_pushnil(L);
+                //lua_pushnil(L);
+                lua_pushstring(L, "");
             } else if (arg.flags & T_ARGV_VALUE) {
                 size_t lin_len = arg.value.length;
                 char* lin = (char*)malloc((lin_len + 9 + 1) * sizeof(char));
@@ -3833,6 +3829,8 @@ txt_template_fill_data htmw_process_txt(const htmw_context *ctx) {
                         } else {
                             last_args_vect_size = out.args_vect_size;
                         }
+                    } else {
+                        out.args_vect_size = last_args_vect_size;
                     }
                     break;
                 } else {

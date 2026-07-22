@@ -1,4 +1,7 @@
 #include "luaw.h"
+#include "htmw.h"
+#include "lauxlib.h"
+#include "lua.h"
 #include "str.h"
 #include <stddef.h>
 
@@ -39,10 +42,30 @@ int luaw_htmw_postprocess(lua_State *L) {
     return 1;
 }
 
+int luaw_htmw_error(lua_State *L) {
+    const char *msg;
+    if (lua_isstring(L, 1))
+        msg = lua_tostring(L, 1);
+
+    throw_error(msg, E_EXIT);
+    return 0;
+}
+
+#if 0
+int luaw_htmw_sanxml(lua_State *L) {
+    if (!lua_isstring(L, 1))
+        return 0;
+
+    
+    return 1;
+}
+#endif
+
 void luaw_init(lua_State *L) {
     luaL_Reg htmw[] = {
         {"process", luaw_htmw_process},
         {"postprocess", luaw_htmw_postprocess},
+        {"error", luaw_htmw_error},
         {NULL, NULL}
     };
 
@@ -113,5 +136,33 @@ function LuaX.createElement(type, props, inner)\n\
     })\n\
 \n\
     return o\n\
+end");
+    luaL_dostring(L, "Regex = {}\n\
+Regex.__index = Regex\n\
+function Regex.new(pattern, flags, global, refId)\n\
+    local x = {\n\
+        pattern = pattern,\n\
+        flags = flags,\n\
+        global = global,\n\
+        refId = refId,\n\
+        __name = \"Regex\"\n\
+    }\n\
+    setmetatable(x, Regex)\n\
+    return x\n\
+end");
+    luaL_dostring(L, "function htmw.sanxml(content)\n\
+    if content == nil then\n\
+        return ""\n\
+    end\n\
+\n\
+    content = tostring(content)\n\
+\n\
+    content = content:gsub(\"&\", \"&amp;\")\n\
+                     :gsub(\"<\", \"&lt;\")\n\
+                     :gsub(\">\", \"&gt;\")\n\
+                     :gsub('\"', \"&quot;\")\n\
+                     :gsub(\"'\", \"&#39;\")\n\
+\n\
+    return content\n\
 end");
 }
