@@ -44,7 +44,7 @@
 #if defined(_WIN32)
     //#define GLOBAL_INCLUDE_PATH_LEN 17
     #define GLOBAL_INCLUDE_PATH "C:\\htmw\\0.7\\include"
-#elif defined(__unix__)
+#elif defined(__unix__) || defined(__APPLE__)
     //#define GLOBAL_INCLUDE_PATH_LEN 31
     #define GLOBAL_INCLUDE_PATH "/usr/local/lib/htmw/0.7"
 #else

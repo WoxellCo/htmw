@@ -9,6 +9,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_executable(${PROJECT_NAME} src/main.c)
 
+message("USING COMPILER ${CMAKE_C_COMPILER_ID}")
+
 add_subdirectory(libhtmw)
 
 target_link_libraries(${PROJECT_NAME} libhtmw luax)
@@ -39,3 +41,6 @@ add_link_options(-fsanitize=address)
 # cmake: `cmake -DCURL_USE_LIBPSL=OFF ..`
 # build: `cmake --build .`
 # note: it would be nice if there's a way to not remove `libspl`, apparently the library is js missing or idk
+
+# for some reason on macos you still gotta run this (using appleclang)
+# cmake: `cmake -DCURL_USE_LIBPSL=OFF ..`

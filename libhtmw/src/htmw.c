@@ -6,7 +6,6 @@
  * The purpose for now is just to implement and test it's functionality without focusing 100% on performance & optimization.
  */
 #include "htmw.h"
-#include "lua.h"
 
 #define DEBUG_MODE 0
 
@@ -3477,7 +3476,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
             break;
         }
     }
-    txt_parse_args_break_for:
+    txt_parse_args_break_for:;
 
 #if DEBUG_MODE
     puts("---[ARGSL]---");
@@ -3794,12 +3793,14 @@ txt_template_fill_data htmw_process_txt(const htmw_context *ctx) {
 
             if (str_isnull(tag_info.name)) {
                 //puts(">>>>>>>>>>>>>>>>>>>>>>>>AAAAA");
+                out.args_vect_size = last_args_vect_size;
                 str_append_ch(&ground, '<');
                 continue;
             }
             #if 1
             if ((tag_info.flags & (1 << 0))/* || (tag_info.flags & (1 << 1))*/) {
                 //puts(">>>>>>>>>>>>>>>>>>>>>>>>BBBBB");
+                out.args_vect_size = last_args_vect_size;
                 str_append_ch(&ground, '<');
                 continue;
             }
@@ -3839,6 +3840,7 @@ txt_template_fill_data htmw_process_txt(const htmw_context *ctx) {
             }
             if (t == NULL) {
                 //puts(">>>>>>>>>>>>>>>>>>>>>>>>CCCCC");
+                out.args_vect_size = last_args_vect_size;
                 str_append_ch(&ground, '<');
                 continue;
             }
