@@ -94,7 +94,8 @@ int main(int argc, char** argv) {
             case 'I': {
                     string *s = (string*)malloc(sizeof(string));
                     *s = str_from(argv[i] + 2);
-                    list_insert(global_include_paths, 0, (void*)s);
+                    //list_insert(global_include_paths, 0, (void*)s);
+                    list_add(global_include_paths, (void *)s);
                 } break;
             case 'N':
                 config.enable_network = 1;

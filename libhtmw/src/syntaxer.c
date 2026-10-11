@@ -290,7 +290,8 @@ syntaxer_result syntaxer_analyze(const htmw_context *ctx, const char *s, size_t 
                         //puts("NEUTRAL");
                         out_token_length = (long long)route->data.block.token_length;
                         //printf("(long long)route->data.block.token_length: %lld\n", (long long)route->data.block.token_length);
-                    } */else {
+                    } */
+                    else {
                         //puts("ERR");
                         error_message = (char *)malloc((75 + strlen(root_router->id) + 1) * sizeof(char));
                         error_ext_message = strdup(lua_tostring(L, -1));
@@ -370,8 +371,16 @@ syntaxer_result syntaxer_analyze(const htmw_context *ctx, const char *s, size_t 
         // TODO: prepare table and call the executor
 
         lua_newtable(L);
+
         lua_pushlstring(L, s + shift, params.out_token_length);
         lua_setfield(L, -2, "token");
+
+
+        lua_newtable(L);
+        lua_pushlstring(L, params.in_token.c_str, params.in_token.length);
+        lua_setfield(L, -2, "token");
+        lua_setfield(L, -2, "entry");
+        
 
         //debug_lua_stack(L);
         if (lua_pcall(L, 1, 1, 0) == LUA_OK) {

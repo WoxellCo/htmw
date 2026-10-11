@@ -53,7 +53,10 @@ static inline uint8_t htmw_props_vector_push(ht_template_arg_value *value_vector
         prop->flags |= T_ARGV_NONE;
     }
 
+    //str_debug(prop->syntax_id);
     //str_debug(prop->key);
+    //str_debug(prop->value);
+    //puts("-----------------");
 
     (*value_vector)[(*n)++] = *prop;
     *prop = (ht_template_arg_value){
@@ -150,7 +153,13 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                     prop.key.c_str = in.c_str + last_key_start_idx;
                 }
                 //prop.key = last_key;
-                htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
+                // mk: this call caused `onchange=#{ev => console.log(ev)}` all in a key
+                // mk: but this is what pushes like <T @key> keys that don't have value
+                // mk: i put those checks and apparently it fixed the issue
+                if (prop.key.length != 0 && (phase == htmw_tps_arg_key || phase == htmw_tps_arg_key_after)) {
+                    //puts("1");
+                    htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
+                }
                 break;
             case htmw_tps_arg_assign:
             case htmw_tps_arg_value:
@@ -164,6 +173,7 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                         ///
                         prop.value.length = i - last_value_start_idx;//last_value
                         //prop.value = last_value;
+                        //puts("2");
                         htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                     }
                 }
@@ -210,6 +220,7 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                 if (bounds == '\0') {
                     phase = htmw_tps_void;
                     prop.value.length = i - last_value_start_idx;
+                    //puts("3");
                     htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 }
                 break;
@@ -245,6 +256,7 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                     bounds = '\0';
                     phase = htmw_tps_void;
                     prop.value.length = i - last_value_start_idx - 1;
+                    //puts("4");
                     htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 }
             }
@@ -262,6 +274,7 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                 prop.value.length = ro.result.first.len;
                 prop.value.c_str = ro.result.first.s;
                 prop.flags |= T_ARGV_VALUE;
+                //puts("5");
                 htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
             }
             break;
@@ -301,9 +314,11 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
 
                 prop.value = lit.content;
                 prop.syntax_id = lit.explicit_syntax_id;
+                //puts("6");
                 htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 ///
                 //phase++;
+                // mk: maybe i should clear? should be already handled by the push function
             }
             break;
             // vT.7s syntax notation
@@ -326,9 +341,11 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                         prop.key.length = i - last_key_start_idx; //last_key
                         prop.key.c_str = in.c_str + last_key_start_idx;
                     }
+                    //puts("7");
                     htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 } else if (phase == htmw_tps_arg_value) {
                     prop.value.length = i - last_value_start_idx;
+                    //puts("8");
                     htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                 }
 
@@ -366,6 +383,7 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
                 case htmw_tps_arg_key_after:
                     if (o.argc > 0 && !str_isnull(prop.key)) {
                         //str_debug(prop.key);
+                        //puts("9");
                         htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
                     }
                     o.argc++;
@@ -412,6 +430,9 @@ struct tag_info_s htmw_analyze_tag(const htmw_context *ctx, const string in, con
         .syntax_id = nullstr,
         .flags = 0
     };
+
+    // mk: im actually pushing null, ok makes sense, i actually forgot that lol
+    //puts("10");
     htmw_props_vector_push(value_vector, value_vector_size, value_vector_cap, &prop);
 
     return o;

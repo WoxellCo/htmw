@@ -2209,6 +2209,8 @@ void htmw_preprocess(lua_State* L, string in, htmw_context* ectx, list *global_p
                         lua_pop(L, 1);
                     }
                 } else {
+                    const char *msg = lua_tostring(L, -1);
+                    printf("%s\n", msg);
                     throw_error("Lua pcall is not ok", E_EXIT);
                 }
 
@@ -2507,6 +2509,8 @@ string process_template(const htmw_context *ctx, const ht_template* t, const str
                     if (lua_pcall(L, 0, 1, 0) == LUA_OK) {
                         // ...
                     } else {
+                        const char *msg = lua_tostring(L, -1);
+                        printf("%s\n", msg);
                         throw_error("Lua pcall is not ok", E_EXIT);
                     }
                 } else {
@@ -2549,6 +2553,8 @@ string process_template(const htmw_context *ctx, const ht_template* t, const str
                 if (lua_pcall(L, 0, 1, 0) == LUA_OK) {
                     // ...
                 } else {
+                    const char *msg = lua_tostring(L, -1);
+                    printf("%s\n", msg);
                     throw_error("Lua pcall is not ok", E_EXIT);
                 }
             } else {
@@ -3201,7 +3207,7 @@ int txt_parse_args(ht_template* t, const string in, txt_list_tot_len* out, htmw_
 
                 luax_transpile_result o = luax_transpile(in.c_str + i + 1, /*in.length*/ 10000, ctx->luax_ctx);
                 if (o.error) { // ofc a more accurate error log will be implemented
-                    printf("[HTMW LuaX Error]: there is an error on the LuaX syntax (3)\n", o.error);
+                    printf("[HTMW LuaX Error]: there is an error on the LuaX syntax (3): %zu\n", o.error);
                     exit(1);
                 }
                 luax_str_view sv = o.result.first;
@@ -4647,6 +4653,7 @@ void htmw_remove_unsafe(lua_State* L) {
     lua_setglobal(L, "package");
 }
 
+#if 0
 int _main(void) {
     PCRE2_SPTR pattern = (PCRE2_SPTR)"^[a-z]+@[a-z]+\\.com$";
     PCRE2_SPTR subject = (PCRE2_SPTR)"test@example.com";
@@ -4691,3 +4698,4 @@ int _main(void) {
 
     return 0;
 }
+#endif
