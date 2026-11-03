@@ -60,6 +60,17 @@ string str_append(string* x, const charw* s, size_t n) {
     return *x;
 }
 
+string str_clone(const string s) {
+    string clone = str_new(s.length + 1);
+
+    for (clone.length = 0; clone.length < s.length; clone.length++) {
+        clone.c_str[clone.length] = s.c_str[clone.length];
+    }
+
+    clone.c_str[clone.length] = '\0';
+    return clone;
+}
+
 //#define str_append_ch(x, c) {if ((x)->length < (x)->size - 1) { (x)->c_str[(x)->length] = (c); (x)->length++; (x)->c_str[(x)->length] = L'\0'; }}
 
 string _str_append_ch(string* x, charw c) {
