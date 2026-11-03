@@ -11,6 +11,7 @@ add_library(${PROJECT_NAME} STATIC src/htmw.c
     src/str.c src/map.c
     src/netio.c src/strplex.c src/syntaxer.c src/luaw.c
     src/htmw_syntax_notation.c src/htmw_syntax_dir.c src/htmw_tag.c src/htmw_template.c
+    src/env.c src/htmw_env.c
 )
 
 target_include_directories(${PROJECT_NAME}

@@ -60,6 +60,52 @@ string str_append(string* x, const charw* s, size_t n) {
     return *x;
 }
 
+int str_reserve(string* x, size_t size) {
+    if (x->size == 0) {
+        return 0;
+    }
+
+    if (size > x->size) {
+        char *const reallocated = (char *)realloc(x->c_str, size * sizeof(char));
+        if (reallocated == NULL)
+            return 0;
+        x->c_str = reallocated;
+        x->size = size;
+    }
+
+    return 1;
+}
+
+string str_append_and_resize(string* x, const charw* s, size_t n) {
+    if (x->c_str == NULL) return nullstr;
+    if (s == NULL) return *x;
+    //size_t add_size = wcslen(s);
+    //add_size = add_size < n ? add_size : n;
+    //wcsncpy(x->c_str + x->length, s, add_size);
+    size_t i;
+    for (i = 0; i < n && s[i] != L'\0'; i++) {
+        if (x->length + i >= x->size) {
+            str_reserve(x, x->size * 2);
+        }
+        x->c_str[x->length + i] = s[i];
+    }
+    x->length += i;
+    x->c_str[x->length] = L'\0';
+    return *x;
+}
+
+string str_append_ch_and_resize(string* x, char c) {
+    if (x->c_str == NULL) return nullstr;
+    
+    if (x->length >= x->size - 1) {
+        str_reserve(x, x->size * 2);
+    }
+    x->c_str[x->length] = c;
+    x->length++;
+    x->c_str[x->length] = '\0';
+    return *x;
+}
+
 string str_clone(const string s) {
     string clone = str_new(s.length + 1);
 

@@ -159,6 +159,7 @@ typedef struct {
     char* origin_name;
     char* output_name;      // NULL if not recursive
     char* format;           // NULL if auto
+    char* dotenv_path;      // path to `
     int replica_mode;       // boolean: if true a deep copy of all the files in the folder will be performed
     int enable_network;     // boolean: if true allows HTTP includes
     int unsafe_mode;        // boolean: if enable_network is true but unsafe_mode is false, unsafe lua libraries will be removed

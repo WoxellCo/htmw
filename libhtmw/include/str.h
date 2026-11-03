@@ -52,11 +52,14 @@ string str_from(const charw *c_str);
 void str_delete(string* x);
 void str_debug(string s);
 string str_append(string* x, const charw* s, size_t n);
-string str_clone(const string s);
+int str_reserve(string* x, size_t size);
+string str_append_and_resize(string* x, const charw* s, size_t n);
+string str_clone(const string s); // mk: did i accidentally rewrite `str_cpy`?
 
 #define str_append_ch(x, c) {if ((x)->length < (x)->size - 1) { (x)->c_str[(x)->length] = (c); (x)->length++; (x)->c_str[(x)->length] = charl('\0'); }}
 
 string _str_append_ch(string* x, charw c);
+string str_append_ch_and_resize(string* x, char c);
 string str_cpy(const string x);
 
 

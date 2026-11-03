@@ -1,4 +1,8 @@
+#include "env.h"
+#include "htmw_env.h"
+#include "str.h"
 #include <htmw.h>
+#include <stdio.h>
 
 // starting point
 
@@ -13,6 +17,7 @@ int main(int argc, char** argv) {
         .origin_name = NULL,
         .output_name = NULL,
         .format = NULL,
+        .dotenv_path = NULL,
         .replica_mode = 0,
         .enable_network = 0,
         .unsafe_mode = 0
@@ -76,6 +81,16 @@ int main(int argc, char** argv) {
                     config.format = argv[++i];
                 }
                 break;
+            case 'E':
+                if (i + 1 >= argc) {
+                    throw_error("Env config error", E_EXIT);
+                }
+                if (config.dotenv_path != NULL) {
+                    throw_error("Env path already set", E_EXIT);
+                } else {
+                    config.dotenv_path = argv[++i];
+                }
+                break;
             case 'R':
                 config.replica_mode = 1;
             case 'r':throw_error("Recursive/Replica mode is not supported yet", E_EXIT);
@@ -130,6 +145,15 @@ int main(int argc, char** argv) {
     if (config.enable_network && !config.unsafe_mode) {
         htmw_remove_unsafe(L);
         printf("[HTMW Warning]: Some features have been disabled to prevent unsafe execution from HTTP sources, use the `--unsafe` flag to enable all the features\n");
+    }
+
+    htmw_init_env(L, in_name);
+    FILE *dotenv = fopen(config.dotenv_path != NULL ? config.dotenv_path : ".env", "r");
+    if (dotenv != NULL) {
+        env_table env = env_parse_stream(dotenv);
+        htmw_load_env(L, &env, "ENV");
+        env_table_delete(&env);
+        fclose(dotenv);
     }
 
     /// create stack allocated context ///
