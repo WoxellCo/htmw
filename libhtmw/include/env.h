@@ -23,6 +23,7 @@ size_t env_table_find_key(const env_table *const table, const char *const key);
 size_t env_table_find_key_having_length(const env_table *const table, const char *const key, const size_t length);
 
 void env_record_delete(env_record *const record);
+env_record env_parse_record(const char *src, const env_table table);
 
 env_table env_parse_stream(FILE *const f);
 

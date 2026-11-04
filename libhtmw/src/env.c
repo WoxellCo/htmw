@@ -181,6 +181,7 @@ static size_t env_handle_value_string_interpolation(string *const s, const char 
 }
 
 static string env_parse_value(const char *const src, const env_table table) {
+    //printf(">>> %s\n", src);
     string value = nullstr;
     size_t i = 0;
     char boundaries;
@@ -193,7 +194,7 @@ static string env_parse_value(const char *const src, const env_table table) {
         boundaries = '\0';
     }
 
-    while (1) {
+    while (1) {//printf("src[%zu] => '%c'\n", i, src[i]);printf(">>> %s\n", src);
         if (src[i] == '\0') {
             if (boundaries != '\0') {
                 // mk: todo: handle error: unclosed value string
@@ -205,7 +206,7 @@ static string env_parse_value(const char *const src, const env_table table) {
             if (boundaries == '\0') {
                 break;
             }
-        } else if (boundaries == '\0' && src[i] == '=') {
+        } else if (boundaries == '\0' && src[i] == '=') {puts("aaa");
             // mk: todo: handle error: double `=` sign
             throw_error("double `=` in ENV", E_EXIT);
         } else if (src[i] == '"' || src[i] == '\'') {
@@ -254,6 +255,7 @@ static string env_parse_value(const char *const src, const env_table table) {
             }
 
             i += n;
+            continue;
         } else {
             if (str_isnull(value)) {
                 value.c_str = src + i;
@@ -271,7 +273,13 @@ static string env_parse_value(const char *const src, const env_table table) {
 }
 
 // mk: returns non-owned keys and incognito-owned values, so the `env_parse_stream` function can pass it to `env_table_push` which creates a clone of the keys & values
-static env_record env_parse_record(const char *const src, const env_table table) {
+env_record env_parse_record(const char *src, const env_table table) {
+    while (*src != '\0') {
+        if (*src != ' ' && *src != '\t') {
+            break;
+        }
+        src++;
+    }
     const string key = env_parse_key(src);
     string value = nullstr;
     size_t i = key.length;

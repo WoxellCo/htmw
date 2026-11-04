@@ -27,6 +27,8 @@ int main(int argc, char** argv) {
 
     list* global_include_paths = list_new();
 
+    env_table env_args = {0};
+
 #ifdef __unix__
     string global_include_buffer = str_from(GLOBAL_INCLUDE_PATH);
     list_insert(global_include_paths, 0, (void*)&global_include_buffer);
@@ -112,6 +114,10 @@ int main(int argc, char** argv) {
                     //list_insert(global_include_paths, 0, (void*)s);
                     list_add(global_include_paths, (void *)s);
                 } break;
+            case 'D': {
+                    const env_record record = env_parse_record(argv[i] + 2, env_args);
+                    env_table_push(&env_args, record.key, record.value);
+                } break;
             case 'N':
                 config.enable_network = 1;
                 break;
@@ -155,6 +161,9 @@ int main(int argc, char** argv) {
         env_table_delete(&env);
         fclose(dotenv);
     }
+
+    htmw_load_env(L, &env_args, "ARGS");
+    env_table_delete(&env_args);
 
     /// create stack allocated context ///
 
