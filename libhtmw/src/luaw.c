@@ -61,6 +61,123 @@ int luaw_htmw_sanxml(lua_State *L) {
 }
 #endif
 
+int luaw_regex_test(lua_State *const L) {
+    if (!lua_istable(L, 1))
+        return 0;
+
+    size_t txt_len = 0;
+    const char *const txt = luaL_checklstring(L, 2, &txt_len);
+
+    pcre2_code *re = NULL;
+    int should_free_re = 0;
+
+    lua_getfield(L, 1, "refId");
+
+    if (lua_isinteger(L, -1)) {
+        lua_Integer idx = lua_tointeger(L, -1);
+        lua_pop(L, 1);
+
+        if (idx <= 0)
+            return luaL_error(L, "invalid regex refId");
+
+        lua_getglobal(L, "___CRV");
+
+        if (lua_type(L, -1) != LUA_TUSERDATA)
+            return luaL_error(L, "___CRV is malformed");
+
+        compiled_regex_vector **blcrv =
+            (compiled_regex_vector **)lua_touserdata(L, -1);
+
+        if (!blcrv || !*blcrv)
+            return luaL_error(L, "___CRV is malformed");
+
+        compiled_regex_vector *lcrv = *blcrv;
+
+        lua_pop(L, 1);
+
+        /*if ((size_t)idx > lcrv->size)
+            return luaL_error(L, "regex refId out of range");*/
+
+        re = lcrv->data[idx - 1].rex;
+
+        if (!re)
+            return luaL_error(L, "invalid compiled regex");
+
+    } else {
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "pattern");
+
+        size_t pattern_len = 0;
+        const char *pattern =
+            luaL_checklstring(L, -1, &pattern_len);
+
+        int error_code;
+        PCRE2_SIZE error_offset;
+
+        re = pcre2_compile(
+            (PCRE2_SPTR)pattern,
+            pattern_len,
+            0,
+            &error_code,
+            &error_offset,
+            NULL
+        );
+
+        lua_pop(L, 1);
+
+        if (!re) {
+            PCRE2_UCHAR error_message[256];
+
+            pcre2_get_error_message(
+                error_code,
+                error_message,
+                sizeof(error_message)
+            );
+
+            return luaL_error(
+                L,
+                "regex compilation failed at offset %zu: %s",
+                (size_t)error_offset,
+                (char *)error_message
+            );
+        }
+
+        should_free_re = 1;
+    }
+
+    pcre2_match_data *match_data =
+        pcre2_match_data_create_from_pattern(re, NULL);
+
+    if (!match_data) {
+        if (should_free_re)
+            pcre2_code_free(re);
+
+        return luaL_error(L, "failed to allocate regex match data");
+    }
+
+    int rc = pcre2_match(
+        re,
+        (PCRE2_SPTR)txt,
+        txt_len,
+        0,
+        PCRE2_NOTEMPTY | PCRE2_NOTEMPTY_ATSTART,
+        match_data,
+        NULL
+    );
+
+    int result = rc >= 0;
+
+    pcre2_match_data_free(match_data);
+
+    if (should_free_re)
+        pcre2_code_free(re);
+
+    lua_pushboolean(L, result);
+
+    return 1;
+}
+
 void luaw_init(lua_State *L) {
     luaL_Reg htmw[] = {
         {"process", luaw_htmw_process},
@@ -73,6 +190,15 @@ void luaw_init(lua_State *L) {
     luaL_setfuncs(L, htmw, 0);
 
     lua_setglobal(L, "htmw");
+
+    luaL_Reg regex[] = {
+        {"test", luaw_regex_test},
+        {NULL, NULL},
+    };
+
+    lua_newtable(L);
+    luaL_setfuncs(L, regex, 0);
+    lua_setglobal(L, "Regex");
 
 
     luaL_dostring(L, "function tooptstr(x)if x ~= nil then return tostring(x) else return \"\" end end");
@@ -137,7 +263,7 @@ function LuaX.createElement(type, props, inner)\n\
 \n\
     return o\n\
 end");
-    luaL_dostring(L, "Regex = {}\n\
+    luaL_dostring(L, "--Regex = {}\n\
 Regex.__index = Regex\n\
 function Regex.new(pattern, flags, global, refId)\n\
     local x = {\n\

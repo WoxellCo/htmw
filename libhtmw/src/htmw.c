@@ -6,6 +6,8 @@
  * The purpose for now is just to implement and test it's functionality without focusing 100% on performance & optimization.
  */
 #include "htmw.h"
+#include "lua.h"
+#include "luax_memory.h"
 
 #define DEBUG_MODE 0
 
@@ -1053,7 +1055,7 @@ void htmw_preprocess(lua_State* L, string in, htmw_context* ectx, list *global_p
     compiled_regex_vector *crv;
     #endif
 
-    if (ectx->flags ^ CTX_INIT) {
+    if (!(ectx->flags & CTX_INIT)) {
         ectx->flags |= CTX_INIT;
         //areas = map_new();
         ectx->areas = *map_new(); // <- FIXME (it shouldn't return a pointer)
@@ -1096,6 +1098,12 @@ void htmw_preprocess(lua_State* L, string in, htmw_context* ectx, list *global_p
             }
         };//luax_ctx;
 
+        compiled_regex_vector *lcrv = ectx->crv;
+        compiled_regex_vector **blcrv = lua_newuserdata(L, sizeof(lcrv));
+        lua_setglobal(L, "___CRV");
+
+        lua_pushinteger(L, *ectx->crv_size);
+        lua_setglobal(L, "___CRV_SIZE");
 
         //debug_htmw_crv(crv, *crv_size - 1);
     }
@@ -2253,6 +2261,7 @@ void htmw_preprocess(lua_State* L, string in, htmw_context* ectx, list *global_p
 }
 
 // generates a template core (bare bones template information) from a given template
+// mk: maybe rushing htmw development back in 2025 wasn't a good idea, most of the old code needs to be rewritten. actually, i think it was a good idea, or else i would've given up due to high complexity for my own needs & a template engine, so yay
 ht_template_core* htmw_process_template_inner(ht_template t) {
     const string inner = t.inner;
     string ground = str_new(t.inner.length + 1);

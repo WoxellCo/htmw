@@ -206,7 +206,7 @@ static string env_parse_value(const char *const src, const env_table table) {
             if (boundaries == '\0') {
                 break;
             }
-        } else if (boundaries == '\0' && src[i] == '=') {puts("aaa");
+        } else if (boundaries == '\0' && src[i] == '=') {
             // mk: todo: handle error: double `=` sign
             throw_error("double `=` in ENV", E_EXIT);
         } else if (src[i] == '"' || src[i] == '\'') {
