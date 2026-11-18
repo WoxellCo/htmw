@@ -1,0 +1,144 @@
+#include "str.h"
+
+string str_new(size_t max_size) {
+    //printf("str_new::max_size = %zu\n", max_size);
+    charw* data = (charw*)malloc(max_size * sizeof(charw));
+    if (data == NULL) {
+        fprintf(stderr, "Memory allocation failed in str_new\n");
+        exit(EXIT_FAILURE);
+    }
+    data[0] = L'\0';
+    return (string) {
+        .length = 0,
+        .size = max_size,
+        .c_str = data
+    };
+}
+
+string str_from(const charw *c_str) {
+    size_t len = strlenw(c_str);
+    string s = str_new(len + 1);
+    strncpyw(s.c_str, c_str, len);
+    s.c_str[len] = charl('\0');
+    s.length = len;
+    return s;
+}
+
+void str_delete(string* x) {
+    if (x->size)
+        free(x->c_str);
+    *x = nullstr;
+}
+
+void str_debug(string s) {
+    char c = L'\0';
+    puts("---[string debug begin]---");
+    printf("(length: %zu, size: %zu, c_str: %p)\"", s.length, s.size, s.c_str);
+    /*for (size_t i = 0; (c = s.c_str[i]) != L'\0'; i++) {
+        putwc(c, stdout);
+    }*/
+    for (size_t i = 0; i < s.length; i++) {
+        c = s.c_str[i];
+        putwc(c, stdout);
+    }
+    putc('"', stdout);
+    puts("---[string debug end]---");
+}
+
+string str_append(string* x, const charw* s, size_t n) {
+    if (x->c_str == NULL) return nullstr;
+    if (s == NULL) return *x;
+    //size_t add_size = wcslen(s);
+    //add_size = add_size < n ? add_size : n;
+    //wcsncpy(x->c_str + x->length, s, add_size);
+    size_t i;
+    for (i = 0; i < n && s[i] != L'\0' && x->length + i < x->size; i++) {
+        x->c_str[x->length + i] = s[i];
+    }
+    x->length += i;
+    x->c_str[x->length] = L'\0';
+    return *x;
+}
+
+int str_reserve(string* x, size_t size) {
+    if (x->size == 0) {
+        return 0;
+    }
+
+    if (size > x->size) {
+        char *const reallocated = (char *)realloc(x->c_str, size * sizeof(char));
+        if (reallocated == NULL)
+            return 0;
+        x->c_str = reallocated;
+        x->size = size;
+    }
+
+    return 1;
+}
+
+string str_append_and_resize(string* x, const charw* s, size_t n) {
+    if (x->c_str == NULL) return nullstr;
+    if (s == NULL) return *x;
+    //size_t add_size = wcslen(s);
+    //add_size = add_size < n ? add_size : n;
+    //wcsncpy(x->c_str + x->length, s, add_size);
+    size_t i;
+    for (i = 0; i < n && s[i] != L'\0'; i++) {
+        if (x->length + i >= x->size) {
+            str_reserve(x, x->size * 2);
+        }
+        x->c_str[x->length + i] = s[i];
+    }
+    x->length += i;
+    x->c_str[x->length] = L'\0';
+    return *x;
+}
+
+string str_append_ch_and_resize(string* x, char c) {
+    if (x->c_str == NULL) return nullstr;
+    
+    if (x->length >= x->size - 1) {
+        str_reserve(x, x->size * 2);
+    }
+    x->c_str[x->length] = c;
+    x->length++;
+    x->c_str[x->length] = '\0';
+    return *x;
+}
+
+string str_clone(const string s) {
+    string clone = str_new(s.length + 1);
+
+    for (clone.length = 0; clone.length < s.length; clone.length++) {
+        clone.c_str[clone.length] = s.c_str[clone.length];
+    }
+
+    clone.c_str[clone.length] = '\0';
+    return clone;
+}
+
+//#define str_append_ch(x, c) {if ((x)->length < (x)->size - 1) { (x)->c_str[(x)->length] = (c); (x)->length++; (x)->c_str[(x)->length] = L'\0'; }}
+
+string _str_append_ch(string* x, charw c) {
+    if (x->length < x->size - 1) {
+        x->c_str[x->length] = c;
+        x->length++;
+        x->c_str[x->length] = L'\0';
+    }
+    return *x;
+}
+
+string str_cpy(const string x) {
+    string o = (string){
+        .length = x.length,
+        .size = x.length + 1,
+        .c_str = (charw*)malloc((x.length + 1) * sizeof(charw))
+    };
+#if DEBUG_MODE
+    //printf("\n%u\n", x.length);
+    //str_debug(x);
+#endif
+    strncpyw(o.c_str, x.c_str, x.length);
+    o.c_str[x.length] = L'\0';
+    return o;
+}

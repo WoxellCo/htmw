@@ -1,37 +1,46 @@
-cmake_minimum_required(VERSION "3.19.2")
+cmake_minimum_required(VERSION 3.28)
+project(htmw)
 
-add_subdirectory("dependencies/curl-8.15.0")
+set(CMAKE_C_STANDARD           99)
+set(CMAKE_C_STANDARD_REQUIRED YES)
+set(CMAKE_C_EXTENSIONS        ON)
 
-project("htmw")
-set(CMAKE_C_STANDARD 99)
-SET(CMAKE_C_FLAGS_DEBUG "-g")
-set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+add_executable(${PROJECT_NAME} src/main.c)
 
+message("USING COMPILER ${CMAKE_C_COMPILER_ID}")
 
+add_subdirectory(libhtmw)
 
-add_library(lua STATIC IMPORTED)
-set_target_properties(lua PROPERTIES
-    IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/lua/src/liblua.a
-)
-
-target_include_directories(lua INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/lua/src
-)
-
-add_dependencies(lua lua_external)
+target_link_libraries(${PROJECT_NAME} libhtmw luax)
 
 
+if (WIN32)
+    if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+        include_directories(libhtmw/include include libhtmw/luax/include libhtmw/curl/include
+            libhtmw/lua/win64_vc17/include
+        )
+    else()
+        include_directories(libhtmw/include include libhtmw/luax/include libhtmw/curl/include
+            libhtmw/lua/win32_vc17/include
+        )
+    endif()
+else()
+    include_directories(libhtmw/include include libhtmw/luax/include libhtmw/curl/include)
+endif()
+
+add_compile_options(-fsanitize=address)
+add_link_options(-fsanitize=address)
 
 
-set(CURL_DISABLE_LIBCURL_PSL ON)
+# to enablde debug please run cmake like this
+# `cmake -DCMAKE_BUILD_TYPE=Debug ..`
 
-set(CURL_DISABLE_LIBCURL_PSL ON CACHE BOOL "Disable libpsl dependency for curl")
-set(CURL_DISABLE_LIBSSH ON CACHE BOOL "Disable libssh dependency for curl")
-set(CURL_DISABLE_LIBSSH2 ON CACHE BOOL "Disable libssh2 dependency for curl")
-set(CURL_DISABLE_OPENSSL ON CACHE BOOL "Disable OpenSSL dependency for curl") # Optional, but good for portability if you don't need it.
+# to build on windows use the following commands (uses msvc)
+# cmake: `cmake -DCURL_USE_LIBPSL=OFF ..`
+# build: `cmake --build .`
+# note: it would be nice if there's a way to not remove `libspl`, apparently the library is js missing or idk
 
-add_executable("htmw" "htmw.c" "map.c" "nxlist.c" "nxvector.c" "nxstack.c" "str.c" "syntaxer.c" "netio.c")
-target_include_directories("htmw" PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/")
-
-target_link_libraries(htmw PRIVATE libcurl lua m)
+# for some reason on macos you still gotta run this (using appleclang)
+# cmake: `cmake -DCURL_USE_LIBPSL=OFF ..`
