@@ -1100,6 +1100,7 @@ void htmw_preprocess(lua_State* L, string in, htmw_context* ectx, list *global_p
 
         compiled_regex_vector *lcrv = ectx->crv;
         compiled_regex_vector **blcrv = lua_newuserdata(L, sizeof(lcrv));
+        *blcrv = lcrv;
         lua_setglobal(L, "___CRV");
 
         lua_pushinteger(L, *ectx->crv_size);

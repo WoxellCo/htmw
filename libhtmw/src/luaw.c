@@ -200,6 +200,13 @@ void luaw_init(lua_State *L) {
     luaL_setfuncs(L, regex, 0);
     lua_setglobal(L, "Regex");
 
+    lua_newtable(L);
+    lua_pushinteger(L, 1);
+    lua_setfield(L, -2, "pop");
+    lua_pushinteger(L, 0);
+    lua_setfield(L, -2, "continue");
+    lua_setglobal(L, "syntax");
+
 
     luaL_dostring(L, "function tooptstr(x)if x ~= nil then return tostring(x) else return \"\" end end");
     luaL_dostring(L, "LuaX = {}\n\

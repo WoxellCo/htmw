@@ -29,9 +29,9 @@ int main(int argc, char** argv) {
 
     env_table env_args = {0};
 
-#ifdef __unix__
+#if defined(__unix__) || defined (__APPLE__)
     string global_include_buffer = str_from(GLOBAL_INCLUDE_PATH);
-    list_insert(global_include_paths, 0, (void*)&global_include_buffer);
+    list_add(global_include_paths, (void*)&global_include_buffer);
 #endif
 
     for (int i = 1; i < argc; i++) {
